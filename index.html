@@ -5,6 +5,123 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.11.0 - 2026-07-10 - Two more fixes from direct visual feedback: (1) NJ/Long Island were rendering
+    as huge disproportionate wedges — root cause: the real NJ polygon runs all the way to Cape May
+    (lat ~39.0, over 2° south of the map) and Suffolk County's runs to Montauk (lon ~-71.8), so the
+    ENTIRE state/county was being drawn at NYC-local projection scale with no clipping — verified this
+    directly against the source coordinates before touching any code. Implemented proper polygon
+    clipping (clipRingToBox/clipGeometryToBox, Sutherland–Hodgman against CONTEXT_CLIP_BOX, a local
+    box with a modest margin past the primary frame) applied before both the outline and fill passes,
+    so context geometry is now proportionate — tested directly against the real NJ coordinates
+    (32→16 points, correctly bounded) before shipping. (2) Branch mesh muddiness at zoomed-out
+    distances wasn't going to be fully solved by more thickness/opacity tuning — thousands of
+    overlapping segments are inherently muddy at that density regardless. Added zoom-based visibility
+    instead (updateBranchVisibility, BRANCH_VISIBLE_MAX_DIST=480): branch mesh only renders once
+    you're zoomed in close enough for its thickness to actually read as structure; canopy dots alone
+    carry the "forest" read from typical zoomed-out distances. Synced on every camera update and
+    immediately after each forest rebuild.
+  v1.10.0 - 2026-07-10 - Three fixes from direct visual feedback: (1) Manhattan was rendering with
+    almost no trees — root cause was fetchAllBoroughsEvenly()'s random $offset being drawn from a
+    range (0-100,000) sized for the big boroughs; Manhattan has far fewer total street-tree records
+    (~62k vs Queens' 250k+), so a large fraction of random offsets silently overshot its row count and
+    returned zero rows. Capped offset to SAFE_MAX_OFFSET=30000 (safe margin below every borough's real
+    count) and added a retry-at-offset-0 fallback (fetchSampleSafe) in case any borough is smaller than
+    expected. (2) "Muddy graphics": thick branch mesh geometry (added in v1.9 to fix zoom-scaling) was
+    overlapping so densely at full-city view that it read as a solid blob rather than crisp structure —
+    thinned branch radius substantially (baseRadius 0.4+dbh*0.05 → 0.16+dbh*0.022), softened branch
+    mesh opacity (0.9→0.68), and replaced canopy points' flat hard-edged squares (default
+    PointsMaterial with no map) with a soft round dot sprite (makeDotTexture, cached via
+    getDotTexture) — hard squares at high density were a real contributor to the blocky look. Bark
+    color lightened slightly for contrast against the now-opaque land fill. (3) New Jersey's outline
+    was too faint to register as "land" at a glance — generalized the context-boundary builder
+    (buildContextGeometry, shared by both NJ and the new Long Island outline) to add a subtle fill
+    (contextFillMat, opacity 0.38 — clearly secondary to NYC's primary 0.94) alongside a brighter,
+    bolder dashed line. Added Long Island's Nassau/Suffolk county outline (public, CORS-verified
+    GeoJSON, 267KB total) using the same real-coordinate projection as everything else — its true
+    coastline extends east past the default framing rather than re-inflating WORLD_SIZE again to force
+    it fully on-screen, which would have diluted NYC further. Also fixed a label-array race condition
+    (contextLabels was being overwritten by whichever context loader finished last, not merged).
+  v1.9.0 - 2026-07-10 - Three real fixes: (1) Species color mode was giving every distinct species its
+    own hash-derived hue, producing dozens of unlabeled purple/pink/etc colors the 8-entry legend
+    couldn't possibly list — now only the top TOP_SPECIES_N species by count in the current sample get
+    a real color (speciesTally/topSpeciesSet, computed once per rebuild and passed into growTree via
+    out.topSpeciesSet); every other species renders in one fixed OTHER_SPECIES_COLOR, and the legend's
+    "N more species" swatch uses that exact same hex, so the two can never disagree again. (2) Branches
+    were GL_LINES, which most GPUs hard-clamp to ~1px regardless of camera distance — that's why they
+    stayed hairline-thin no matter how far you zoomed in. Replaced with real tapered mesh geometry
+    (emitBranchSegment: a 4-sided quad tube per segment, indexed, no end caps, radius scales with dbh
+    and tapers by generation) batched into one indexed BufferGeometry/Mesh, so thickness is true
+    world-space geometry that scales correctly with zoom. Pulled SAMPLE_LIMIT_SINGLE/PER_BOROUGH back
+    down (6000→4200, 2200→1400) to offset the much higher triangle cost. (3) Click-to-inspect: tapping
+    a canopy point raycasts against forestPoints (each point maps 1:1 back to its source record via
+    the new pointRecordRefs array, populated in growTree) and shows a small card with species, trunk
+    diameter, health, borough, and tree ID. Tap-vs-drag is distinguished by tracking movement distance
+    on the primary pointer, so orbiting doesn't accidentally trigger a lookup.
+  v1.8.0 - 2026-07-10 - Extended geographic context and real water rendering: (1) widened the map
+    bounds north into the lower Hudson Valley and west into northern New Jersey (LAT_MAX 40.9153→41.20,
+    LON_MIN -74.2557→-74.45), scaling WORLD_SIZE 900→1200 by the same ratio so NYC itself doesn't
+    shrink just because the frame got bigger; (2) added a New Jersey state outline (public, CORS-
+    verified GeoJSON, filtered to the NJ feature) rendered as a faint dashed line + label, kept
+    entirely separate from the NYC borough pipeline — non-critical, fails silently if unavailable,
+    no toast; (3) real water: a canvas-gradient-textured plane beneath everything (navy near the
+    edges, lighter teal toward the center), with borough/state land fill opacity raised 0.16→0.94 so
+    land now reads as solid ground against it. Added explicit renderOrder to every layer
+    (water→grid→land fill→outlines→trees) since transparent-material depth sorting in Three.js isn't
+    reliable enough to trust blind, especially now that land fill is much less transparent.
+  v1.7.0 - 2026-07-10 - Confirmed working plan view prompted three usability additions: (1) replaced
+    the world-anchored floating "N" label with a fixed compass dial in the viewport's top-right corner
+    (position:absolute, not projected through the camera each frame) that rotates with camTheta only
+    — azimuth, not pitch, matching how map-app compass widgets behave — and is clickable to reset
+    orientation to north-up without touching zoom/pan; (2) a help modal (? button in the header)
+    explaining the data source, how to read health/species coloring, and every control; (3) native
+    title-attribute tooltips on all borough/color-mode/view-mode/camera buttons.
+  v1.6.0 - 2026-07-10 - Legend now shows real data instead of a static key: Health mode computes actual
+    percentage/count per category from the currently loaded sample; Species mode tallies species in the
+    sample, shows the top 8 by count with their actual speciesColor() swatch (so the legend color always
+    matches what's rendered — no separately-maintained color list to drift out of sync), and rolls the
+    remainder into an "N more species" entry. renderLegend() now runs at the end of rebuildForest(), so
+    it refreshes automatically on borough switch, reseed, and color-mode change rather than needing a
+    separate call at each site.
+  v1.5.0 - 2026-07-10 - Added basic view controls: Recenter (snaps camera distance/angle/target back
+    to the active preset, undoing any pan/orbit/zoom drift), a Plan / 3D view toggle (Plan = near-vertical
+    top-down at camPhi 0.05, 3D = the existing oblique default at camPhi 0.55), and panning (right-click
+    drag, shift+drag, or two-finger drag on touch — implemented via a pointer-id Map so one active
+    pointer orbits and two pan/pinch-zoom simultaneously). Pan translates camTarget along the camera's
+    own screen-space right/up basis (Matrix4.extractBasis), scaled by current zoom distance, so pan
+    speed stays consistent whether zoomed in or out. Orbit's phi clamp loosened (0.15→0.04 min) so the
+    Plan preset and manual dragging can both reach a true near-top-down angle.
+  v1.4.0 - 2026-07-10 - Boundary rectangles persisted even after the .json switch, meaning the query
+    itself was still failing (likely the server-side simplify() call, or a field-name mismatch — no
+    way to be sure blind). Removed both points of fragility: dropped $select/simplify() entirely (fetch
+    raw rows, decimate ring points client-side instead), and replaced hardcoded field names with
+    extractBoroughFeature(), which scans each row's own keys for a geometry object and a recognizable
+    borough-name string rather than assuming "boro_name"/"the_geom" are correct. Failure toasts now
+    surface the actual response body for debugging instead of just a status code. Also addressed
+    "no sense of scale, needs to be denser": per-borough sample raised 900→2200 (≈11k total for "All"),
+    single-borough sample 3200→6000, canopy point size 3.2→4.4, and default camera distance tightened
+    780 (was 1050) so the city fills the frame instead of floating in a mostly-empty viewport.
+  v1.3.0 - 2026-07-10 - The "bunch of rectangles" report was the fallback path rendering, not a
+    styling issue: the boundary fetch was hitting the .geojson export endpoint, which behaves
+    inconsistently with a computed geometry column (simplify(...)) and was failing silently in the
+    browser every load, so it always fell through to the approximate bounding-box rectangles. Switched
+    to the plain .json SODA endpoint — the same format the tree fetch already uses successfully — and
+    adapt the returned rows into a features-shaped array so the rest of the boundary/label pipeline is
+    unchanged.
+  v1.2.0 - 2026-07-10 - Fixed "doesn't look like NYC": (1) the "All boroughs" view now fetches each
+    borough separately in parallel (fetchAllBoroughsEvenly) instead of one $offset window on the
+    unfiltered table, which was landing in a single contiguous geographic slice and produced
+    disconnected islands instead of a citywide shape; (2) added filled borough landmass meshes
+    (THREE.Shape + ShapeGeometry, hole-aware) alongside the existing outline, so land reads as solid
+    ground against the water gaps instead of implied-only-by-wireframe; (3) default camera reset to a
+    top-down, north-up framing (camPhi 0.55, camTheta 90°) — the previous near-horizon default made
+    the borough shapes unrecognizable before the user even started orbiting.
+  v1.1.0 - 2026-07-10 - Added geographic context, since a bare point-cloud on a black grid read as
+    unlabeled noise: real borough boundary outlines (NYC Open Data, dataset gthc-hcne, water areas
+    excluded — the gaps between shapes ARE the rivers/harbor), floating borough name labels at each
+    boundary's centroid, a world-space scale bar (derived from the lat/long→unit projection, not a
+    guess), and a north indicator. Labels are plain HTML divs repositioned every frame via
+    Vector3.project() against the camera — no sprite/texture overhead. Falls back to approximate
+    bounding-box rectangles if the boundary fetch fails, same resilience pattern as the tree data.
   v1.0.0 - 2026-07-10 - Initial build: fetches a live sample from the NYC Open Data Street Tree Census
     (Socrata SODA API, dataset uvpi-gqnh), projects real lat/long onto a ground plane, and grows a seeded
     L-system branch structure per tree (mulberry32(tree_id)). Branch geometry batched into one LineSegments
@@ -118,6 +235,56 @@
     font-family:var(--font-ui); font-size:11px; letter-spacing:.04em; color:rgba(241,235,221,.55);
     pointer-events:none;
   }
+  #labelsLayer{position:absolute; inset:0; pointer-events:none; overflow:hidden;}
+  .map-label{
+    position:absolute; transform:translate(-50%,-50%);
+    font-family:var(--font-ui); font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase;
+    color:rgba(241,235,221,.82); background:rgba(20,17,13,.55); border:1px solid rgba(241,235,221,.18);
+    padding:2px 7px; white-space:nowrap;
+  }
+  .map-label.context-label{
+    font-size:10px; font-weight:500; color:rgba(241,235,221,.45);
+    background:transparent; border:none; padding:0;
+  }
+  .compass-dial{
+    position:absolute; top:12px; right:12px; width:44px; height:44px; border-radius:50%;
+    background:rgba(20,17,13,.55); border:1.5px solid rgba(241,235,221,.3);
+    display:flex; align-items:center; justify-content:center; cursor:pointer; pointer-events:auto;
+    transition:background-color .15s ease;
+  }
+  .compass-dial:hover{background:rgba(20,17,13,.8);}
+  .compass-dial .needle{
+    font-family:var(--font-ui); font-size:13px; font-weight:700; color:rgba(241,235,221,.85);
+    display:flex; flex-direction:column; align-items:center; gap:1px; transition:transform .15s ease-out;
+  }
+  .compass-dial .needle .arrow{font-size:12px; line-height:1;}
+  .tree-info-card{
+    position:absolute; max-width:230px; background:rgba(20,17,13,.93); border:1.5px solid rgba(241,235,221,.28);
+    padding:11px 13px; font-family:var(--font-ui); font-size:12px; color:rgba(241,235,221,.92);
+    line-height:1.6; display:none; z-index:6; pointer-events:auto;
+  }
+  .tree-info-card.show{display:block;}
+  .tree-info-card .ti-species{
+    font-weight:700; font-size:13px; margin:0 0 5px; padding-right:16px; color:#fff; text-transform:capitalize;
+  }
+  .tree-info-card .ti-row{
+    display:flex; justify-content:space-between; gap:12px;
+    font-family:var(--font-mono); font-size:10.5px; color:rgba(241,235,221,.68);
+  }
+  .tree-info-card .ti-close{
+    position:absolute; top:6px; right:7px; background:none; border:none; color:rgba(241,235,221,.6);
+    font-size:15px; line-height:1; cursor:pointer; padding:2px;
+  }
+  .scale-bar{
+    position:absolute; bottom:34px; left:12px;
+    font-family:var(--font-mono); font-size:11px; color:rgba(241,235,221,.65);
+    display:flex; align-items:center; gap:6px; pointer-events:none;
+  }
+  .scale-bar .tick{width:70px; height:0; border-top:1.5px solid rgba(241,235,221,.65); position:relative;}
+  .scale-bar .tick::before, .scale-bar .tick::after{
+    content:''; position:absolute; top:-4px; width:1.5px; height:8px; background:rgba(241,235,221,.65);
+  }
+  .scale-bar .tick::before{left:0;} .scale-bar .tick::after{right:0;}
   .loading-overlay{
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
     background:var(--canvas-bg); color:var(--paper); font-family:var(--font-ui); font-size:13px;
@@ -142,6 +309,27 @@
     max-width:min(90vw,420px); text-align:center;
   }
   .toast.show{opacity:1;}
+
+  .help-overlay{
+    position:fixed; inset:0; background:rgba(10,9,6,.72); z-index:100;
+    display:none; align-items:center; justify-content:center; padding:20px;
+  }
+  .help-overlay.show{display:flex;}
+  .help-panel{
+    background:var(--card); border:1.5px solid var(--line); max-width:560px; width:100%;
+    max-height:85vh; overflow-y:auto; padding:28px 26px 22px; position:relative;
+  }
+  .help-panel h2{font-family:var(--font-display); margin:0 0 12px; font-size:22px;}
+  .help-panel h3{font-family:var(--font-ui); font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-soft); margin:20px 0 8px;}
+  .help-panel p{font-size:14.5px; line-height:1.55; margin:0 0 4px;}
+  .help-panel ul{margin:0; padding-left:20px; font-size:14px; line-height:1.6;}
+  .help-panel li{margin-bottom:4px;}
+  .help-footnote{margin-top:20px; font-family:var(--font-ui); font-size:11.5px; color:var(--ink-soft);}
+  .help-close{
+    position:absolute; top:14px; right:14px; width:32px; height:32px; border-radius:50%;
+    border:1.5px solid var(--line); background:transparent; color:var(--ink); font-size:18px;
+    line-height:1; cursor:pointer; padding:0;
+  }
 </style>
 </head>
 <body>
@@ -149,7 +337,8 @@
 <header class="top">
   <h1>STAND</h1>
   <p>NYC Street Tree Census · Grown Back as a Forest</p>
-  <button class="theme-toggle" id="themeToggle" aria-label="Toggle dark mode">🌙</button>
+  <button class="theme-toggle" id="helpToggle" style="right:64px;" aria-label="Help" title="What is this / how to read it">?</button>
+  <button class="theme-toggle" id="themeToggle" aria-label="Toggle dark mode" title="Toggle light/dark theme">🌙</button>
 </header>
 
 <main id="main">
@@ -166,7 +355,17 @@
     <div class="group">
       <label>Sample</label>
       <div class="row">
-        <button class="btn secondary" id="reseedBtn">Reseed sample</button>
+        <button class="btn secondary" id="reseedBtn" title="Fetch a new random sample from NYC Open Data">Reseed sample</button>
+      </div>
+    </div>
+    <div class="group">
+      <label>View</label>
+      <div class="row" id="viewModeRow"></div>
+    </div>
+    <div class="group">
+      <label>Camera</label>
+      <div class="row">
+        <button class="btn secondary" id="recenterBtn" title="Reset camera position, angle, and pan to the current view preset">Recenter</button>
       </div>
     </div>
     <div class="group" style="margin-left:auto; align-items:flex-end;">
@@ -180,7 +379,13 @@
       <div class="spinner"></div>
       <div id="loadingText">Fetching live sample from NYC Open Data…</div>
     </div>
-    <div class="hint">Drag to orbit · scroll to zoom · each structure is grown from one real tree record</div>
+    <div id="labelsLayer"></div>
+    <div class="compass-dial" id="compassDial" title="Click to reset orientation to north-up">
+      <div class="needle" id="compassNeedle"><span class="arrow">▲</span><span>N</span></div>
+    </div>
+    <div class="tree-info-card" id="treeInfoCard"></div>
+    <div class="scale-bar" id="scaleBar"></div>
+    <div class="hint">Drag to orbit · right-click or two-finger drag to pan · scroll or pinch to zoom in for real branch structure · tap a tree for its record</div>
   </div>
 
   <div class="legend" id="legend"></div>
@@ -190,9 +395,42 @@
 <footer class="foot" id="footVersion"></footer>
 <div class="toast" id="toast"></div>
 
+<div class="help-overlay" id="helpOverlay" role="dialog" aria-modal="true" aria-label="About STAND">
+  <div class="help-panel">
+    <button class="help-close" id="helpClose" aria-label="Close help">×</button>
+    <h2>What am I looking at?</h2>
+    <p>Every structure in this scene is grown from one real tree record in NYC's
+      <a href="https://data.cityofnewyork.us/Environment/2015-Street-Tree-Census-Tree-Data/uvpi-gqnh" target="_blank" rel="noopener">2015 Street Tree Census</a>,
+      fetched live from NYC Open Data. Species, trunk diameter, health, and location all come from the real record —
+      nothing is invented except the branch shape itself, which is procedurally grown (seeded per tree, so the same
+      record always grows the same shape).</p>
+    <h3>Reading the map</h3>
+    <ul>
+      <li>Outlines are the official NYC borough boundaries — water is already excluded, so gaps between shapes are rivers/harbor, not missing data.</li>
+      <li>The blue underneath is a rendered water base, not photography — it's there so land reads as solid against the harbor and rivers.</li>
+      <li>The dashed outlines are New Jersey (west) and Long Island's Nassau/Suffolk counties (east) — geographic context only, neither has tree data of its own. Long Island's real coastline extends past the default view; pan or zoom out to see the North and South Forks.</li>
+      <li><b>Canopy color — Health</b>: green = Good, ochre = Fair, red = Poor, grey = Unknown.</li>
+      <li><b>Canopy color — Species</b>: each species gets a consistent hue; the legend below the map shows the top species in the current sample.</li>
+      <li>Branch <i>diameter</i> and depth scale with the tree's real trunk diameter (DBH) — bigger, older trees grow taller, more branched structures. Branch geometry only renders once you're zoomed in close (from far away, thousands of overlapping branches just read as a muddy blob, so canopy dots alone carry the view).</li>
+      <li>The scale bar and borough labels are derived from the real lat/long projection, not estimated.</li>
+    </ul>
+    <h3>Controls</h3>
+    <ul>
+      <li><b>Orbit</b>: click/touch and drag.</li>
+      <li><b>Pan</b>: right-click drag, shift+drag, or two-finger drag.</li>
+      <li><b>Zoom</b>: scroll wheel or pinch.</li>
+      <li><b>Recenter</b>: snaps the camera back to the current view preset, undoing any pan/orbit/zoom.</li>
+      <li><b>View — 3D / Plan</b>: switch between an oblique angle and a true top-down map view.</li>
+      <li><b>Compass dial</b> (top-right of the map): click to reset orientation to north-up without changing zoom or pan.</li>
+      <li><b>Tap a tree</b>: any canopy point can be tapped/clicked to show that tree's real record — species, trunk diameter, health, borough, and tree ID.</li>
+    </ul>
+    <p class="help-footnote">Built by Joe.K · <a href="https://axisbim.io" target="_blank" rel="noopener">axisbim.io</a></p>
+  </div>
+</div>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.11.0';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -234,16 +472,50 @@ function speciesColor(spc){
   c.setHSL(h/360, 0.42, 0.5);
   return c;
 }
-const BARK_COLOR = new THREE.Color(0x8A7458);
+const BARK_COLOR = new THREE.Color(0x9C8468);
 
-/* ================= NYC bounding box → world plane projection ================= */
-const LAT_MIN=40.4957, LAT_MAX=40.9153, LON_MIN=-74.2557, LON_MAX=-73.7002;
-const WORLD_SIZE = 900;
+// In Species color mode, giving every distinct species its own hash-derived hue produces dozens of
+// unlabeled colors the legend can't possibly list (that's the "purple and pink with nothing in the
+// key" bug) — so only the top N species by count in the CURRENT sample get their real color; every
+// other species renders in one fixed neutral tone, and the legend's "N more species" swatch uses
+// that exact same color, so the two can never disagree.
+const TOP_SPECIES_N = 8;
+const OTHER_SPECIES_COLOR = new THREE.Color(0x5C5138);
+const OTHER_SPECIES_HEX = '#5C5138';
+function speciesTally(records){
+  const tally = {};
+  records.forEach(r => { tally[r.species] = (tally[r.species] || 0) + 1; });
+  return Object.entries(tally).sort((a,b) => b[1]-a[1]); // [[species, count], ...] desc by count
+}
+function topSpeciesSet(records){
+  return new Set(speciesTally(records).slice(0, TOP_SPECIES_N).map(([s])=>s));
+}
+
+/* ================= NYC bounding box → world plane projection =================
+   Extended beyond the five boroughs on request: north into the lower Hudson Valley (a hint of
+   "upstate" and more of the river), west into northern New Jersey (Newark/Jersey City/Hackensack
+   area) so the NJ state outline has somewhere to sit. WORLD_SIZE scaled up by the same ratio the
+   lon span grew, so NYC itself doesn't shrink/get more sparse just because the frame got bigger. */
+const LAT_MIN=40.4957, LAT_MAX=41.20, LON_MIN=-74.45, LON_MAX=-73.7002;
+const WORLD_SIZE = 1200;
 function project(lat, lon){
   const x = ((lon - LON_MIN) / (LON_MAX - LON_MIN)) * WORLD_SIZE - WORLD_SIZE/2;
   const z = ((LAT_MAX - lat) / (LAT_MAX - LAT_MIN)) * WORLD_SIZE - WORLD_SIZE/2;
   return {x, z};
 }
+// Real-world miles per world unit, derived from the lon span at NYC's latitude
+// (1° longitude ≈ 52.3 miles at ~40.7°N) — used to draw an honest scale bar, not a guessed one.
+const MILES_PER_UNIT = ((LON_MAX - LON_MIN) * 52.3) / WORLD_SIZE;
+
+// Shared fallback bounding boxes — used both for the synthetic tree sample and the
+// synthetic borough-outline rectangles if the live boundary fetch fails.
+const BOROUGH_BOUNDS_APPROX = {
+  Manhattan:   {lat:[40.700,40.880], lon:[-74.020,-73.910]},
+  Brooklyn:    {lat:[40.570,40.740], lon:[-74.045,-73.850]},
+  Queens:      {lat:[40.540,40.800], lon:[-73.960,-73.700]},
+  Bronx:       {lat:[40.785,40.915], lon:[-73.935,-73.765]},
+  'Staten Island': {lat:[40.495,40.650], lon:[-74.255,-74.050]}
+};
 
 /* ================= L-system branch generator =================
    Each tree is grown from a seed derived from tree_id, so the same record always
@@ -258,21 +530,31 @@ function growTree(rec, out){
   const spHash = hashString(rec.species || 'unknown');
   const angleSpread = 0.35 + ((spHash % 100) / 100) * 0.55; // species-driven branch character, radians
   const healthColor = HEALTH_COLOR[rec.health] || HEALTH_COLOR.Unknown;
-  const canopyColor = out.colorMode === 'species' ? speciesColor(rec.species) : healthColor;
+  let canopyColor;
+  if(out.colorMode === 'species'){
+    const isTop = out.topSpeciesSet && out.topSpeciesSet.has(rec.species);
+    canopyColor = isTop ? speciesColor(rec.species) : OTHER_SPECIES_COLOR;
+  } else {
+    canopyColor = healthColor;
+  }
 
   const base = new THREE.Vector3(rec.x, 0, rec.z);
   const lean = new THREE.Vector3((rng()-0.5)*0.12, 1, (rng()-0.5)*0.12).normalize();
 
+  // Branch thickness: trunk scales with the tree's real diameter (dbh), then tapers by generation
+  // so twigs are thinner than the trunk — floored so tips never vanish to zero width.
+  const baseRadius = 0.16 + dbh * 0.022;
+  function branchRadius(gen){ return Math.max(0.035, baseRadius * Math.pow(0.68, gen)); }
+
   function branch(origin, dir, len, gen){
     const end = origin.clone().addScaledVector(dir, len);
-    out.linePos.push(origin.x, origin.y, origin.z, end.x, end.y, end.z);
-    const lc = gen === 0 ? BARK_COLOR : BARK_COLOR;
-    out.lineCol.push(lc.r, lc.g, lc.b, lc.r, lc.g, lc.b);
+    emitBranchSegment(origin, end, branchRadius(gen), BARK_COLOR, out);
 
     if(gen >= depth){
       out.pointPos.push(end.x, end.y, end.z);
       out.pointCol.push(canopyColor.r, canopyColor.g, canopyColor.b);
       out.pointSize.push(2.2 + dbh * 0.14 + rng()*1.2);
+      out.pointRecordRef.push(rec);
       return;
     }
     const children = gen === 0 ? 1 : (rng() < 0.32 ? 3 : 2);
@@ -291,25 +573,54 @@ function growTree(rec, out){
   branch(base, lean, height * 0.36, 0);
 }
 
+/* Emits one branch segment as a 4-sided tapered tube (8 verts, 4 quads, no end caps — caps are
+   almost never visible, either occluded by the next segment or facing away, so skipping them halves
+   the triangle count for free). Appends into out.branchPos/branchCol/branchIdx, which accumulate
+   across the whole sample into one indexed BufferGeometry/Mesh — real 3D geometry, so unlike the old
+   GL_LINES approach it has true world-space thickness and actually scales when you zoom in. */
+function emitBranchSegment(origin, end, radius, color, out){
+  const dir = new THREE.Vector3().subVectors(end, origin).normalize();
+  const ref = Math.abs(dir.y) > 0.9 ? new THREE.Vector3(1,0,0) : new THREE.Vector3(0,1,0);
+  const right = new THREE.Vector3().crossVectors(dir, ref).normalize().multiplyScalar(radius);
+  const up2 = new THREE.Vector3().crossVectors(right, dir).normalize().multiplyScalar(radius);
+  const c0 = new THREE.Vector3().addVectors(right, up2);
+  const c1 = new THREE.Vector3().subVectors(up2, right);
+  const c2 = c0.clone().negate();
+  const c3 = new THREE.Vector3().subVectors(right, up2);
+
+  const base = out.branchPos.length / 3;
+  [c0,c1,c2,c3].forEach(c => { out.branchPos.push(origin.x+c.x, origin.y+c.y, origin.z+c.z); });
+  [c0,c1,c2,c3].forEach(c => { out.branchPos.push(end.x+c.x, end.y+c.y, end.z+c.z); });
+  for(let i=0;i<8;i++) out.branchCol.push(color.r, color.g, color.b);
+  for(let i=0;i<4;i++){
+    const a=i, b=(i+1)%4;
+    out.branchIdx.push(base+a, base+b, base+4+b,  base+a, base+4+b, base+4+a);
+  }
+}
+
 /* ================= Data layer ================= */
 const SODA_BASE = 'https://data.cityofnewyork.us/resource/uvpi-gqnh.json';
-const SAMPLE_LIMIT = 3500;
+// Branches now render as real tapered mesh geometry, not GL_LINES (see emitBranchSegment) — that's
+// meaningfully heavier per tree (~8 vertices + 24 indices per branch segment vs. 2 vertices before),
+// so sample sizes are pulled back down from v1.4's peak to keep total triangle count reasonable.
+const SAMPLE_LIMIT_SINGLE = 4200;      // one borough selected — denser, focused detail
+const SAMPLE_LIMIT_PER_BOROUGH = 1400; // "All" — fetched per borough in parallel, ~7k total
 let cache = {}; // borough -> raw records
 
-function buildUrl(borough, offset){
+function buildUrl(borough, offset, limit){
   let where = "status='Alive' AND latitude IS NOT NULL AND longitude IS NOT NULL AND tree_dbh IS NOT NULL";
   if(borough && borough !== 'All') where += ` AND boroname='${borough}'`;
   const params = new URLSearchParams({
     '$select': 'tree_id,spc_common,tree_dbh,health,boroname,latitude,longitude',
     '$where': where,
-    '$limit': String(SAMPLE_LIMIT),
+    '$limit': String(limit),
     '$offset': String(offset)
   });
   return `${SODA_BASE}?${params.toString()}`;
 }
 
-async function fetchSample(borough, offset){
-  const url = buildUrl(borough, offset);
+async function fetchSample(borough, offset, limit){
+  const url = buildUrl(borough, offset, limit);
   const res = await fetch(url);
   if(!res.ok) throw new Error('NYC Open Data request failed: ' + res.status);
   const rows = await res.json();
@@ -324,15 +635,31 @@ async function fetchSample(borough, offset){
   })).filter(r => isFinite(r.lat) && isFinite(r.lon));
 }
 
+/* A single $offset window on the unfiltered table tends to land in one contiguous, geographically
+   narrow slice of rows rather than spanning the city — that's what produced the disconnected "islands"
+   instead of a recognizable NYC outline. For the "All" view we instead fetch each borough separately,
+   in parallel, so every load is guaranteed to cover all five boroughs.
+
+   MANHATTAN_SAFE_MAX_OFFSET matters more than it looks: Manhattan has far fewer total street-tree
+   records than the other boroughs (~62k vs. Queens' 250k+). A random offset drawn from a range sized
+   for the big boroughs regularly overshot Manhattan's actual row count, silently returning zero rows
+   — that's why Manhattan was rendering empty. Capped low enough to stay safely inside every borough's
+   real count, plus a retry-at-offset-0 fallback in case any borough is smaller than expected. */
+const SAFE_MAX_OFFSET = 30000;
+async function fetchSampleSafe(borough, limit){
+  let rows = await fetchSample(borough, Math.floor(Math.random() * SAFE_MAX_OFFSET), limit);
+  if(!rows.length) rows = await fetchSample(borough, 0, limit); // guaranteed non-empty if the borough has any rows at all
+  return rows;
+}
+async function fetchAllBoroughsEvenly(){
+  const boroughs = Object.keys(BOROUGH_BOUNDS_APPROX);
+  const chunks = await Promise.all(boroughs.map(b => fetchSampleSafe(b, SAMPLE_LIMIT_PER_BOROUGH)));
+  return chunks.flat();
+}
+
 /* Synthetic offline fallback — used only if the live fetch fails (blocked network, CORS, etc). */
 function syntheticSample(borough){
-  const boroughBounds = {
-    Manhattan:   {lat:[40.700,40.880], lon:[-74.020,-73.910]},
-    Brooklyn:    {lat:[40.570,40.740], lon:[-74.045,-73.850]},
-    Queens:      {lat:[40.540,40.800], lon:[-73.960,-73.700]},
-    Bronx:       {lat:[40.785,40.915], lon:[-73.935,-73.765]},
-    'Staten Island': {lat:[40.495,40.650], lon:[-74.255,-74.050]}
-  };
+  const boroughBounds = BOROUGH_BOUNDS_APPROX;
   const species = ['London planetree','Callery pear','Honeylocust','Pin oak','Norway maple','Japanese zelkova','Ginkgo','Little-leaf linden'];
   const healths = ['Good','Good','Good','Fair','Fair','Poor'];
   const rng = mulberry32(20260710);
@@ -356,11 +683,427 @@ function syntheticSample(borough){
   return out;
 }
 
+/* ================= Borough boundary outlines + floating labels =================
+   Without these the point-cloud has no way to read as "this is a city" — it's just
+   scattered clusters. Boundaries come from NYC Open Data's official Borough Boundaries
+   dataset (water areas already excluded from the polygons, so gaps between shapes ARE
+   the rivers/harbor). Labels are plain HTML divs repositioned every frame by projecting
+   each boundary's centroid through the camera — cheaper than sprite textures and crisp
+   at any zoom. */
+// No $select, no server-side simplify() — a computed-geometry SoQL function is a plausible
+// source of a silent query failure, and it's one less thing to debug blind. Fetch the raw rows
+// (this dataset is just 5, one per borough — trivially small) and simplify point count client-side.
+const BOUNDARY_URL = 'https://data.cityofnewyork.us/resource/gthc-hcne.json';
+
+let boundaryGroup = null;
+let boroughLabels = []; // [{name, pos: Vector3}] — the 5 NYC boroughs, full-strength label style
+let contextLabels = []; // [{name, pos: Vector3}] — surrounding context (e.g. New Jersey), fainter style
+
+const KNOWN_BOROUGHS = ['Manhattan','Brooklyn','Queens','Bronx','Staten Island'];
+
+// Field names on NYC Open Data datasets don't always match what the display columns suggest
+// (e.g. "boro_name" vs "boroname" vs something else entirely) — rather than hardcode a guess
+// that can silently break again, scan each row's own keys for a geometry object and a
+// recognizable borough name string.
+function extractBoroughFeature(row){
+  let geometry = null, name = null;
+  for(const key in row){
+    const val = row[key];
+    if(!geometry && val && typeof val === 'object' && val.type && val.coordinates) geometry = val;
+    if(!name && typeof val === 'string'){
+      const match = KNOWN_BOROUGHS.find(b => b.toLowerCase() === val.trim().toLowerCase());
+      if(match) name = match;
+    }
+  }
+  return (geometry && name) ? {properties:{boro_name:name}, geometry} : null;
+}
+
+// Reduce point count without depending on any server-side function — keep every Nth vertex
+// (always keeping the first/last of each ring so shapes stay closed).
+function decimateRing(ring, keepEvery){
+  if(ring.length <= keepEvery * 3) return ring;
+  const out = [];
+  for(let i=0;i<ring.length;i++){
+    if(i % keepEvery === 0 || i === ring.length-1) out.push(ring[i]);
+  }
+  return out;
+}
+function decimateGeometry(geom, keepEvery){
+  if(geom.type === 'Polygon'){
+    return {type:'Polygon', coordinates: geom.coordinates.map(r => decimateRing(r, keepEvery))};
+  }
+  if(geom.type === 'MultiPolygon'){
+    return {type:'MultiPolygon', coordinates: geom.coordinates.map(poly => poly.map(r => decimateRing(r, keepEvery)))};
+  }
+  return geom;
+}
+
+async function loadBoroughBoundaries(){
+  try{
+    const res = await fetch(BOUNDARY_URL);
+    if(!res.ok){
+      const body = await res.text().catch(()=> '');
+      throw new Error(`boundary request failed: ${res.status} ${body.slice(0,200)}`);
+    }
+    const rows = await res.json();
+    if(!Array.isArray(rows) || !rows.length) throw new Error('empty boundary response');
+    const features = rows
+      .map(extractBoroughFeature)
+      .filter(Boolean)
+      .map(f => ({ properties: f.properties, geometry: decimateGeometry(f.geometry, 6) }));
+    if(!features.length) throw new Error('no row had both a recognizable borough name and a geometry object — got keys: ' + Object.keys(rows[0] || {}).join(', '));
+    buildBoundaryGeometry(features);
+  } catch(err){
+    console.warn('STAND: borough boundary fetch failed, using approximate rectangles —', err.message);
+    buildBoundaryGeometry(null);
+    toast('Borough outlines unavailable — showing approximate boundaries');
+  }
+}
+
+// Surrounding geographic context — New Jersey (state) and Long Island's Nassau/Suffolk counties
+// (the non-NYC part of Long Island; Brooklyn/Queens are already shown as primary NYC data). Both are
+// public, CORS-verified GeoJSON sources, kept entirely separate from the NYC borough pipeline: this
+// is reference context, not primary data, so a failure here is silent (console only, no toast).
+const STATES_URL = 'https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json';
+const CONTEXT_STATES = ['New Jersey'];
+const COUNTIES_URL = 'https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/new-york-counties.geojson';
+const LONG_ISLAND_COUNTIES = ['Nassau County', 'Suffolk County'];
+const contextFillMat = new THREE.MeshBasicMaterial({
+  color: 0x4A4230, transparent: true, opacity: 0.38, side: THREE.DoubleSide, depthWrite: false
+});
+
+// NJ's real polygon runs all the way to Cape May (lat ~39.0) and Suffolk County's runs to Montauk
+// (lon ~-71.8) — rendering either in full at NYC-local projection scale produces a wildly
+// disproportionate shape (the entire state/county at the same scale as five NYC boroughs). Clipping
+// to a generous-but-local box keeps context proportionate: still extends a bit past the primary
+// frame, but not for hundreds of real miles.
+const CONTEXT_CLIP_BOX = { lonMin: LON_MIN - 0.55, lonMax: LON_MAX + 0.85, latMin: LAT_MIN - 0.35, latMax: LAT_MAX + 0.25 };
+
+function lerpOnEdge(a, b, axis, value){
+  const idx = axis === 'lon' ? 0 : 1;
+  const t = (value - a[idx]) / (b[idx] - a[idx]);
+  return [a[0] + t*(b[0]-a[0]), a[1] + t*(b[1]-a[1])];
+}
+// Sutherland–Hodgman: clips a closed polygon ring against one half-plane at a time (4 calls = a box).
+function clipRingHalfPlane(points, inside, axis, value){
+  if(!points.length) return [];
+  const out = [];
+  for(let i=0;i<points.length;i++){
+    const cur = points[i], prev = points[(i - 1 + points.length) % points.length];
+    const curIn = inside(cur), prevIn = inside(prev);
+    if(curIn){
+      if(!prevIn) out.push(lerpOnEdge(prev, cur, axis, value));
+      out.push(cur);
+    } else if(prevIn){
+      out.push(lerpOnEdge(prev, cur, axis, value));
+    }
+  }
+  return out;
+}
+function clipRingToBox(ring, box){
+  let pts = ring;
+  pts = clipRingHalfPlane(pts, p => p[0] >= box.lonMin, 'lon', box.lonMin);
+  pts = clipRingHalfPlane(pts, p => p[0] <= box.lonMax, 'lon', box.lonMax);
+  pts = clipRingHalfPlane(pts, p => p[1] >= box.latMin, 'lat', box.latMin);
+  pts = clipRingHalfPlane(pts, p => p[1] <= box.latMax, 'lat', box.latMax);
+  if(pts.length < 3) return null;
+  const first = pts[0], last = pts[pts.length-1];
+  if(first[0] !== last[0] || first[1] !== last[1]) pts = pts.concat([[first[0], first[1]]]);
+  return pts;
+}
+function clipGeometryToBox(geom, box){
+  const clipPoly = (rings) => rings.map(r => clipRingToBox(r, box)).filter(Boolean);
+  if(geom.type === 'Polygon'){
+    const coords = clipPoly(geom.coordinates);
+    return coords.length ? {type:'Polygon', coordinates: coords} : null;
+  }
+  if(geom.type === 'MultiPolygon'){
+    const polys = geom.coordinates.map(clipPoly).filter(p => p.length);
+    return polys.length ? {type:'MultiPolygon', coordinates: polys} : null;
+  }
+  return null;
+}
+
+async function loadStateContext(){
+  try{
+    const res = await fetch(STATES_URL);
+    if(!res.ok) throw new Error('state boundary request failed: ' + res.status);
+    const geo = await res.json();
+    const features = (geo.features || []).filter(f => CONTEXT_STATES.includes(f.properties && f.properties.name));
+    if(!features.length) throw new Error('no matching state features in response');
+    buildContextGeometry(features, f => f.properties.name);
+  } catch(err){
+    console.warn('STAND: state context fetch failed (New Jersey outline omitted) —', err.message);
+  }
+}
+
+// Long Island's outline is clipped the same way as NJ — the real coastline runs to Montauk, but only
+// the portion near NYC (western Nassau, a bit of Suffolk) is shown, kept proportionate to the frame.
+async function loadLongIslandContext(){
+  try{
+    const res = await fetch(COUNTIES_URL);
+    if(!res.ok) throw new Error('county boundary request failed: ' + res.status);
+    const geo = await res.json();
+    const features = (geo.features || []).filter(f => LONG_ISLAND_COUNTIES.includes(f.properties && f.properties.name));
+    if(!features.length) throw new Error('no matching county features in response');
+    buildContextGeometry(features, () => 'Long Island'); // merge both counties under one label
+  } catch(err){
+    console.warn('STAND: Long Island context fetch failed (outline omitted) —', err.message);
+  }
+}
+
+function buildContextGeometry(features, nameFn){
+  // Clip every feature's geometry to the local box up front, so the outline pass, fill pass, and
+  // centroid/label calculation all agree on the same (proportionate) shape.
+  const clipped = features
+    .map(f => ({ name: nameFn(f), geom: clipGeometryToBox(f.geometry, CONTEXT_CLIP_BOX) }))
+    .filter(f => f.geom);
+  if(!clipped.length) return;
+
+  const positions = [];
+  const centroids = {};
+  clipped.forEach(({name, geom})=>{
+    if(geom.type === 'Polygon'){
+      geom.coordinates.forEach(ring => addRing(ring, name, positions, centroids));
+    } else if(geom.type === 'MultiPolygon'){
+      geom.coordinates.forEach(poly => poly.forEach(ring => addRing(ring, name, positions, centroids)));
+    }
+  });
+  if(!positions.length) return;
+
+  // Subtle fill first, so context land reads as land at a glance rather than needing the viewer to
+  // trace a thin dashed line — still clearly secondary to NYC's much higher-opacity primary land fill.
+  clipped.forEach(({geom})=>{
+    if(geom.type === 'Polygon'){
+      const mesh = polygonFillMesh(geom.coordinates, contextFillMat);
+      mesh.userData.sharedMaterial = true;
+      mesh.renderOrder = 2;
+      scene.add(mesh);
+    } else if(geom.type === 'MultiPolygon'){
+      geom.coordinates.forEach(ringSet=>{
+        const mesh = polygonFillMesh(ringSet, contextFillMat);
+        mesh.userData.sharedMaterial = true;
+        mesh.renderOrder = 2;
+        scene.add(mesh);
+      });
+    }
+  });
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  const mat = new THREE.LineDashedMaterial({color:0xD6C9A9, dashSize:9, gapSize:5, transparent:true, opacity:0.7});
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.computeLineDistances(); // required by LineDashedMaterial
+  lines.renderOrder = 3;
+  scene.add(lines);
+
+  contextLabels.push(...Object.entries(centroids).map(([name, c]) => ({
+    name: name.toUpperCase(), pos: new THREE.Vector3(c.x / c.n, 40, c.z / c.n)
+  })));
+  buildLabelEls();
+}
+
+function addRing(coords, boroName, positions, centroids){
+  for(let i=1;i<coords.length;i++){
+    const prev = project(coords[i-1][1], coords[i-1][0]);
+    const cur  = project(coords[i][1], coords[i][0]);
+    positions.push(prev.x, 0.6, prev.z, cur.x, 0.6, cur.z);
+  }
+  if(boroName){
+    const c = centroids[boroName] || (centroids[boroName] = {x:0, z:0, n:0});
+    coords.forEach(([lon,lat])=>{
+      const p = project(lat, lon);
+      c.x += p.x; c.z += p.z; c.n++;
+    });
+  }
+}
+
+/* Builds a flat filled mesh for one polygon (ringSet[0] = outer boundary, any further
+   rings = holes) so land reads as solid ground against the black water gaps, rather than
+   being implied only by a wireframe outline. */
+function polygonFillMesh(ringSet, material){
+  const toXZ = ([lon,lat]) => { const p = project(lat, lon); return new THREE.Vector2(p.x, p.z); };
+  const shape = new THREE.Shape(ringSet[0].map(toXZ));
+  for(let h = 1; h < ringSet.length; h++){
+    shape.holes.push(new THREE.Path(ringSet[h].map(toXZ)));
+  }
+  const geo = new THREE.ShapeGeometry(shape);
+  geo.rotateX(Math.PI / 2); // Shape lives in XY; lay it flat onto the XZ ground plane
+  geo.translate(0, 0.05, 0);
+  return new THREE.Mesh(geo, material);
+}
+
+function buildBoundaryGeometry(features){
+  if(boundaryGroup){
+    scene.remove(boundaryGroup);
+    boundaryGroup.children.forEach(c=>{ c.geometry.dispose(); if(!c.userData.sharedMaterial) c.material.dispose(); });
+  }
+  boundaryGroup = new THREE.Group();
+
+  const positions = [];
+  const centroids = {};
+  const fillMat = new THREE.MeshBasicMaterial({
+    color: 0x3A3323, transparent: true, opacity: 0.94, side: THREE.DoubleSide, depthWrite: false
+  });
+
+  function addFeaturePolygons(coordinates, isMulti){
+    const polys = isMulti ? coordinates : [coordinates];
+    polys.forEach(ringSet=>{
+      const mesh = polygonFillMesh(ringSet, fillMat);
+      mesh.userData.sharedMaterial = true;
+      mesh.renderOrder = 2;
+      boundaryGroup.add(mesh);
+    });
+  }
+
+  if(features){
+    features.forEach(f=>{
+      const name = f.properties.boro_name;
+      const geom = f.geometry;
+      if(!geom) return;
+      if(geom.type === 'Polygon'){
+        geom.coordinates.forEach(ring => addRing(ring, name, positions, centroids));
+        addFeaturePolygons(geom.coordinates, false);
+      } else if(geom.type === 'MultiPolygon'){
+        geom.coordinates.forEach(poly => poly.forEach(ring => addRing(ring, name, positions, centroids)));
+        addFeaturePolygons(geom.coordinates, true);
+      }
+    });
+  } else {
+    Object.entries(BOROUGH_BOUNDS_APPROX).forEach(([name, bb])=>{
+      const ring = [
+        [bb.lon[0],bb.lat[0]], [bb.lon[1],bb.lat[0]], [bb.lon[1],bb.lat[1]], [bb.lon[0],bb.lat[1]], [bb.lon[0],bb.lat[0]]
+      ];
+      addRing(ring, name, positions, centroids);
+      addFeaturePolygons([ring], false);
+    });
+  }
+
+  const lineGeo = new THREE.BufferGeometry();
+  lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  const lineMat = new THREE.LineBasicMaterial({color:0xD6C9A9, transparent:true, opacity:0.6});
+  const outlineLines = new THREE.LineSegments(lineGeo, lineMat);
+  outlineLines.renderOrder = 3;
+  boundaryGroup.add(outlineLines);
+  scene.add(boundaryGroup);
+
+  boroughLabels = Object.entries(centroids).map(([name, c]) => ({
+    name, pos: new THREE.Vector3(c.x / c.n, 55, c.z / c.n)
+  }));
+  buildLabelEls();
+}
+
+/* HTML label layer — cheaper and crisper than 3D sprite text at this scale. */
+let labelEls = {}; // name -> div
+function buildLabelEls(){
+  const layer = document.getElementById('labelsLayer');
+  layer.innerHTML = '';
+  labelEls = {};
+  boroughLabels.forEach(l=>{
+    const div = document.createElement('div');
+    div.className = 'map-label';
+    div.textContent = l.name;
+    layer.appendChild(div);
+    labelEls[l.name] = div;
+  });
+  contextLabels.forEach(l=>{
+    const div = document.createElement('div');
+    div.className = 'map-label context-label';
+    div.textContent = l.name;
+    layer.appendChild(div);
+    labelEls[l.name] = div;
+  });
+}
+function worldToScreen(vec3){
+  const wrap = document.getElementById('viewportWrap');
+  const v = vec3.clone().project(camera);
+  return {
+    x: (v.x * 0.5 + 0.5) * wrap.clientWidth,
+    y: (-v.y * 0.5 + 0.5) * wrap.clientHeight,
+    visible: v.z < 1
+  };
+}
+function updateLabels(){
+  boroughLabels.concat(contextLabels).forEach(l=>{
+    const el = labelEls[l.name];
+    if(!el) return;
+    const s = worldToScreen(l.pos);
+    el.style.display = s.visible ? 'block' : 'none';
+    el.style.left = s.x + 'px';
+    el.style.top = s.y + 'px';
+  });
+  updateCompass();
+}
+/* Fixed compass dial (top-right of the viewport) rather than a world-anchored label — it stays
+   visible regardless of pan/zoom and reads as a proper map instrument. Rotation follows camTheta
+   only (azimuth around the vertical axis), which is what "which way is north" actually means for a
+   north-up map convention; pitch (camPhi) intentionally doesn't affect it, same as most map apps'
+   compass widgets. At the default camTheta (Math.PI/2, north-up) the needle points straight up. */
+function updateCompass(){
+  const needle = document.getElementById('compassNeedle');
+  if(!needle) return;
+  const degrees = (camTheta - Math.PI/2) * (180/Math.PI);
+  needle.style.transform = `rotate(${-degrees}deg)`;
+}
+function renderScaleBar(){
+  const barUnits = 150; // arbitrary world-unit length for the bar
+  const miles = (barUnits * MILES_PER_UNIT).toFixed(1);
+  document.getElementById('scaleBar').innerHTML = `<span class="tick"></span><span>≈ ${miles} mi</span>`;
+}
+
 /* ================= Three.js scene ================= */
 let renderer, scene, camera;
 let forestLines = null, forestPoints = null, groundGrid = null;
-let camDist = 620, camTheta = 0.75, camPhi = 1.15;
-const camTarget = new THREE.Vector3(0, 40, 0);
+// North-up (theta=90° puts the camera south of the target looking north — east right, north up,
+// the conventional map reading). Two named presets: a near-top-down "Plan" view and an oblique "3D"
+// view; Recenter snaps back to whichever is currently active, including undoing any pan.
+const VIEW_PRESETS = {
+  '3d':   {camDist: 1040, camTheta: Math.PI/2, camPhi: 0.55},
+  'plan': {camDist: 1270, camTheta: Math.PI/2, camPhi: 0.05}
+};
+let viewMode = '3d';
+let camDist = VIEW_PRESETS['3d'].camDist, camTheta = VIEW_PRESETS['3d'].camTheta, camPhi = VIEW_PRESETS['3d'].camPhi;
+const DEFAULT_TARGET = new THREE.Vector3(0, 40, 0);
+const camTarget = DEFAULT_TARGET.clone();
+
+function makeWaterTexture(){
+  // Canvas-based radial gradient — lighter, slightly teal near the harbor/river channels in the
+  // center, deeper navy toward the outer edges — rather than a flat fill.
+  const size = 512;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(size/2, size/2, size*0.05, size/2, size/2, size*0.72);
+  g.addColorStop(0, '#1C3F52');
+  g.addColorStop(0.55, '#122A3B');
+  g.addColorStop(1, '#0A1826');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(c);
+  return tex;
+}
+
+// Plain THREE.PointsMaterial with no map renders flat hard-edged squares — at full-sample density
+// that reads as a blocky, pixelated mess rather than foliage. A soft round alpha sprite (white center
+// fading to transparent) makes each canopy point read as a soft dot instead.
+function makeDotTexture(){
+  const size = 64;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.6, 'rgba(255,255,255,0.7)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(c);
+}
+let dotTextureCache = null;
+function getDotTexture(){
+  if(!dotTextureCache) dotTextureCache = makeDotTexture();
+  return dotTextureCache;
+}
 
 function initScene(){
   const canvas = document.getElementById('viewport');
@@ -371,8 +1114,21 @@ function initScene(){
   camera = new THREE.PerspectiveCamera(42, 1, 1, 4000);
   updateCamera();
 
-  const grid = new THREE.GridHelper(WORLD_SIZE, 30, 0x3A3222, 0x24201A);
+  // Water base — sits beneath the grid and the (near-opaque) land fill, so it only shows through
+  // in the gaps between borough/state shapes: rivers, the harbor, the ocean.
+  const waterGeo = new THREE.PlaneGeometry(WORLD_SIZE * 1.6, WORLD_SIZE * 1.6);
+  waterGeo.rotateX(-Math.PI / 2);
+  const waterMat = new THREE.MeshBasicMaterial({map: makeWaterTexture(), depthWrite: false});
+  const water = new THREE.Mesh(waterGeo, waterMat);
+  water.renderOrder = 0;
+  water.position.y = -0.5;
+  scene.add(water);
+
+  const grid = new THREE.GridHelper(WORLD_SIZE, 30, 0x2A2519, 0x1C1811);
+  grid.material.transparent = true;
+  grid.material.opacity = 0.22;
   grid.position.y = 0;
+  grid.renderOrder = 1;
   scene.add(grid);
   groundGrid = grid;
 
@@ -391,68 +1147,220 @@ function resizeRenderer(){
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
 }
+// Real branch mesh geometry (see emitBranchSegment) is what lets branches scale correctly on zoom,
+// but at typical zoomed-out distances thousands of overlapping segments read as a muddy solid mass
+// rather than structure — canopy dots alone carry the "forest" read from far away. So branches are
+// only actually drawn once the camera is close enough for their thickness to be the point.
+const BRANCH_VISIBLE_MAX_DIST = 480;
+function updateBranchVisibility(){
+  if(forestLines) forestLines.visible = camDist < BRANCH_VISIBLE_MAX_DIST;
+}
 function updateCamera(){
   const x = camTarget.x + camDist * Math.sin(camPhi) * Math.cos(camTheta);
   const y = camTarget.y + camDist * Math.cos(camPhi);
   const z = camTarget.z + camDist * Math.sin(camPhi) * Math.sin(camTheta);
   camera.position.set(x, y, z);
   camera.lookAt(camTarget);
+  camera.updateMatrixWorld();
+  updateBranchVisibility();
 }
-/* Custom orbit — three@r128 via cdnjs doesn't ship the OrbitControls addon as a loadable
-   single script here, so this is a minimal self-contained drag/zoom implementation. */
+function setViewMode(mode){
+  viewMode = mode;
+  const p = VIEW_PRESETS[mode];
+  camDist = p.camDist; camTheta = p.camTheta; camPhi = p.camPhi;
+  updateCamera();
+}
+function recenterView(){
+  camTarget.copy(DEFAULT_TARGET);
+  setViewMode(viewMode);
+}
+/* Custom orbit/pan/zoom — three@r128 via cdnjs doesn't ship the OrbitControls addon as a loadable
+   single script here, so this is a minimal self-contained implementation.
+   - One pointer drag: orbit
+   - Two-finger drag (touch) or right-click drag or shift+drag: pan
+   - Wheel: zoom · pinch (two-finger distance change): zoom */
 function attachOrbitControls(el){
-  let dragging = false, lastX=0, lastY=0;
-  el.addEventListener('pointerdown', e=>{ dragging=true; lastX=e.clientX; lastY=e.clientY; el.setPointerCapture(e.pointerId); });
-  el.addEventListener('pointerup', e=>{ dragging=false; });
-  el.addEventListener('pointercancel', ()=>{ dragging=false; });
-  el.addEventListener('pointermove', e=>{
-    if(!dragging) return;
-    const dx = e.clientX - lastX, dy = e.clientY - lastY;
-    lastX = e.clientX; lastY = e.clientY;
-    camTheta -= dx * 0.006;
-    camPhi = Math.max(0.15, Math.min(Math.PI/2 - 0.02, camPhi - dy * 0.006));
+  el.addEventListener('contextmenu', e => e.preventDefault());
+  const pointers = new Map(); // pointerId -> {x, y}
+  let mode = null; // 'orbit' | 'pan' | 'pinch'
+  let lastX = 0, lastY = 0, lastPinchDist = 0;
+  let downX = 0, downY = 0, moved = false; // tap-vs-drag detection for click-to-inspect
+
+  function centroid(){
+    const pts = [...pointers.values()];
+    return {x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2};
+  }
+  function pinchDist(){
+    const pts = [...pointers.values()];
+    return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+  }
+  function panBy(dx, dy){
+    const panSpeed = camDist * 0.0013;
+    const xAxis = new THREE.Vector3(), yAxis = new THREE.Vector3(), zAxis = new THREE.Vector3();
+    camera.matrixWorld.extractBasis(xAxis, yAxis, zAxis);
+    camTarget.addScaledVector(xAxis, -dx * panSpeed);
+    camTarget.addScaledVector(yAxis, dy * panSpeed);
     updateCamera();
+  }
+
+  el.addEventListener('pointerdown', e=>{
+    el.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
+    if(pointers.size === 1){ downX = e.clientX; downY = e.clientY; moved = false; }
+    if(pointers.size === 2){
+      mode = 'pinch';
+      lastPinchDist = pinchDist();
+      const c = centroid(); lastX = c.x; lastY = c.y;
+    } else {
+      mode = (e.button === 2 || e.shiftKey) ? 'pan' : 'orbit';
+      lastX = e.clientX; lastY = e.clientY;
+    }
+  });
+  function endPointer(e){
+    const wasSolePointer = pointers.size === 1;
+    const wasOrbit = mode === 'orbit';
+    pointers.delete(e.pointerId);
+    if(pointers.size === 0){
+      if(wasSolePointer && wasOrbit && !moved) handleCanvasTap(e.clientX, e.clientY);
+      mode = null;
+    } else if(pointers.size === 1){
+      mode = 'orbit';
+      const p = [...pointers.values()][0];
+      lastX = p.x; lastY = p.y;
+    }
+  }
+  el.addEventListener('pointerup', endPointer);
+  el.addEventListener('pointercancel', endPointer);
+  el.addEventListener('pointermove', e=>{
+    if(!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, {x:e.clientX, y:e.clientY});
+
+    if(mode === 'pinch' && pointers.size === 2){
+      const d = pinchDist();
+      camDist = Math.max(80, Math.min(2200, camDist - (d - lastPinchDist) * 1.8));
+      lastPinchDist = d;
+      const c = centroid();
+      panBy(c.x - lastX, c.y - lastY);
+      lastX = c.x; lastY = c.y;
+      updateCamera();
+      return;
+    }
+    if(mode === 'pan'){
+      panBy(e.clientX - lastX, e.clientY - lastY);
+      lastX = e.clientX; lastY = e.clientY;
+      return;
+    }
+    if(mode === 'orbit'){
+      if(!moved && Math.hypot(e.clientX - downX, e.clientY - downY) > 6) moved = true;
+      const dx = e.clientX - lastX, dy = e.clientY - lastY;
+      lastX = e.clientX; lastY = e.clientY;
+      camTheta -= dx * 0.006;
+      camPhi = Math.max(0.04, Math.min(Math.PI/2 - 0.02, camPhi - dy * 0.006));
+      updateCamera();
+    }
   });
   el.addEventListener('wheel', e=>{
     e.preventDefault();
     camDist = Math.max(80, Math.min(2200, camDist + e.deltaY * 0.5));
     updateCamera();
   }, {passive:false});
+
+  /* Click-to-inspect: raycast against the canopy points (not the branch mesh — points map 1:1 back
+     to a real record via pointRecordRefs, branches don't). Threshold scales with camDist so picking
+     stays forgiving whether zoomed in or out. */
+  function handleCanvasTap(clientX, clientY){
+    if(!forestPoints || !pointRecordRefs.length) return;
+    const rect = el.getBoundingClientRect();
+    const ndc = new THREE.Vector2(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1
+    );
+    const raycaster = new THREE.Raycaster();
+    raycaster.params.Points.threshold = Math.max(2, camDist * 0.012);
+    raycaster.setFromCamera(ndc, camera);
+    const hits = raycaster.intersectObject(forestPoints);
+    if(hits.length){
+      const rec = pointRecordRefs[hits[0].index];
+      if(rec) showTreeInfo(rec, clientX, clientY);
+    } else {
+      hideTreeInfo();
+    }
+  }
+}
+function showTreeInfo(rec, clientX, clientY){
+  const card = document.getElementById('treeInfoCard');
+  const wrap = document.getElementById('viewportWrap');
+  const wrapRect = wrap.getBoundingClientRect();
+  let x = clientX - wrapRect.left + 14, y = clientY - wrapRect.top + 14;
+  x = Math.min(x, Math.max(8, wrapRect.width - 238));
+  y = Math.min(y, Math.max(8, wrapRect.height - 150));
+  card.style.left = x + 'px';
+  card.style.top = y + 'px';
+  card.innerHTML = `
+    <button class="ti-close" id="tiClose" aria-label="Close">×</button>
+    <div class="ti-species">${escapeHtml(rec.species)}</div>
+    <div class="ti-row"><span>Trunk diameter</span><span>${Number(rec.dbh).toFixed(1)}"</span></div>
+    <div class="ti-row"><span>Health</span><span>${escapeHtml(rec.health)}</span></div>
+    <div class="ti-row"><span>Borough</span><span>${escapeHtml(rec.borough || '—')}</span></div>
+    <div class="ti-row"><span>Tree ID</span><span>${escapeHtml(String(rec.tree_id))}</span></div>
+  `;
+  card.classList.add('show');
+  document.getElementById('tiClose').addEventListener('click', hideTreeInfo);
+}
+function hideTreeInfo(){
+  document.getElementById('treeInfoCard').classList.remove('show');
 }
 function animate(){
   requestAnimationFrame(animate);
   renderer.render(scene, camera);
+  updateLabels();
 }
 
 /* ================= Build forest geometry from current records ================= */
 let currentRecords = [];
 let colorMode = 'health';
+let pointRecordRefs = []; // index-aligned with forestPoints' vertices, for click-to-inspect
 
 function rebuildForest(records){
+  hideTreeInfo();
   if(forestLines){ scene.remove(forestLines); forestLines.geometry.dispose(); forestLines.material.dispose(); }
   if(forestPoints){ scene.remove(forestPoints); forestPoints.geometry.dispose(); forestPoints.material.dispose(); }
 
-  const out = {linePos:[], lineCol:[], pointPos:[], pointCol:[], pointSize:[], colorMode};
+  const out = {
+    branchPos:[], branchCol:[], branchIdx:[],
+    pointPos:[], pointCol:[], pointSize:[], pointRecordRef:[],
+    colorMode,
+    topSpeciesSet: colorMode === 'species' ? topSpeciesSet(records) : null
+  };
   records.forEach(rec=>{
     const p = project(rec.lat, rec.lon);
     growTree({...rec, x:p.x, z:p.z}, out);
   });
 
-  const lineGeo = new THREE.BufferGeometry();
-  lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(out.linePos, 3));
-  lineGeo.setAttribute('color', new THREE.Float32BufferAttribute(out.lineCol, 3));
-  const lineMat = new THREE.LineBasicMaterial({vertexColors:true, transparent:true, opacity:0.85});
-  forestLines = new THREE.LineSegments(lineGeo, lineMat);
+  const branchGeo = new THREE.BufferGeometry();
+  branchGeo.setAttribute('position', new THREE.Float32BufferAttribute(out.branchPos, 3));
+  branchGeo.setAttribute('color', new THREE.Float32BufferAttribute(out.branchCol, 3));
+  branchGeo.setIndex(new THREE.Uint32BufferAttribute(out.branchIdx, 1));
+  const branchMat = new THREE.MeshBasicMaterial({vertexColors:true, side:THREE.DoubleSide, transparent:true, opacity:0.68});
+  forestLines = new THREE.Mesh(branchGeo, branchMat);
+  forestLines.renderOrder = 4;
   scene.add(forestLines);
+  updateBranchVisibility();
 
   const ptGeo = new THREE.BufferGeometry();
   ptGeo.setAttribute('position', new THREE.Float32BufferAttribute(out.pointPos, 3));
   ptGeo.setAttribute('color', new THREE.Float32BufferAttribute(out.pointCol, 3));
-  const ptMat = new THREE.PointsMaterial({size:3.2, vertexColors:true, sizeAttenuation:true, transparent:true, opacity:0.92});
+  const ptMat = new THREE.PointsMaterial({
+    size:5.2, map:getDotTexture(), vertexColors:true, sizeAttenuation:true,
+    transparent:true, opacity:0.95, depthWrite:false
+  });
   forestPoints = new THREE.Points(ptGeo, ptMat);
+  forestPoints.renderOrder = 5;
   scene.add(forestPoints);
+  pointRecordRefs = out.pointRecordRef;
 
   document.getElementById('statLine').innerHTML = `<b>${records.length.toLocaleString()}</b> trees loaded`;
+  renderLegend();
 }
 
 /* ================= UI: borough + color mode + legend ================= */
@@ -462,7 +1370,7 @@ let activeBorough = 'All';
 function renderBoroughRow(){
   const row = document.getElementById('boroughRow');
   row.innerHTML = BOROUGHS.map(b =>
-    `<button class="btn secondary${b===activeBorough?' active':''}" data-borough="${escapeAttr(b)}">${escapeHtml(b)}</button>`
+    `<button class="btn secondary${b===activeBorough?' active':''}" data-borough="${escapeAttr(b)}" title="${b==='All' ? 'Fetch a sample spanning all five boroughs' : `Fetch a focused sample from ${escapeAttr(b)} only`}">${escapeHtml(b)}</button>`
   ).join('');
   row.querySelectorAll('button').forEach(btn=>{
     btn.addEventListener('click', ()=> selectBorough(btn.dataset.borough));
@@ -470,27 +1378,72 @@ function renderBoroughRow(){
 }
 function renderColorModeRow(){
   const row = document.getElementById('colorModeRow');
-  const modes = [['health','Health'],['species','Species']];
-  row.innerHTML = modes.map(([v,label])=>
-    `<button class="btn secondary${v===colorMode?' active':''}" data-mode="${v}">${label}</button>`
+  const modes = [
+    ['health','Health','Color canopy by tree health (Good/Fair/Poor/Unknown)'],
+    ['species','Species','Top species by count get distinct colors; everything else is one neutral tone — see legend below']
+  ];
+  row.innerHTML = modes.map(([v,label,title])=>
+    `<button class="btn secondary${v===colorMode?' active':''}" data-mode="${v}" title="${escapeAttr(title)}">${label}</button>`
   ).join('');
   row.querySelectorAll('button').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       colorMode = btn.dataset.mode;
       renderColorModeRow();
-      renderLegend();
       if(currentRecords.length) rebuildForest(currentRecords);
+    });
+  });
+}
+function renderViewModeRow(){
+  const row = document.getElementById('viewModeRow');
+  const modes = [
+    ['3d','3D','Oblique angle — see the branch structures in depth'],
+    ['plan','Plan','True top-down map view']
+  ];
+  row.innerHTML = modes.map(([v,label,title])=>
+    `<button class="btn secondary${v===viewMode?' active':''}" data-view="${v}" title="${escapeAttr(title)}">${label}</button>`
+  ).join('');
+  row.querySelectorAll('button').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      setViewMode(btn.dataset.view);
+      renderViewModeRow();
     });
   });
 }
 function renderLegend(){
   const legend = document.getElementById('legend');
+  const total = currentRecords.length;
+  if(!total){
+    legend.innerHTML = `<span>Legend fills in once a sample is loaded…</span>`;
+    return;
+  }
+
   if(colorMode === 'health'){
-    legend.innerHTML = [
-      ['Good','#2F5233'], ['Fair','#C8932A'], ['Poor','#B23A2E'], ['Unknown','#8A7E68']
-    ].map(([label,hex])=>`<span><span class="sw" style="background:${hex}"></span>${label}</span>`).join('');
+    const order = ['Good','Fair','Poor','Unknown'];
+    const counts = {Good:0, Fair:0, Poor:0, Unknown:0};
+    currentRecords.forEach(r => { counts[counts.hasOwnProperty(r.health) ? r.health : 'Unknown']++; });
+    const swatchHex = {Good:'#2F5233', Fair:'#C8932A', Poor:'#B23A2E', Unknown:'#8A7E68'};
+    legend.innerHTML = order.map(label=>{
+      const n = counts[label];
+      const pct = total ? Math.round((n / total) * 100) : 0;
+      return `<span><span class="sw" style="background:${swatchHex[label]}"></span>${label} — ${pct}% (${n.toLocaleString()})</span>`;
+    }).join('');
   } else {
-    legend.innerHTML = `<span>Canopy hue is derived from each record's species name — consistent per species, varies across the sample.</span>`;
+    // Same tally + same TOP_SPECIES_N + same OTHER_SPECIES_HEX used to color the actual canopy —
+    // this legend cannot show a color that isn't really on screen, or vice versa.
+    const sorted = speciesTally(currentRecords);
+    const top = sorted.slice(0, TOP_SPECIES_N);
+    const otherCount = sorted.slice(TOP_SPECIES_N).reduce((sum,[,n]) => sum+n, 0);
+
+    const swatches = top.map(([species, n])=>{
+      const c = speciesColor(species);
+      const hex = '#' + c.getHexString();
+      const pct = Math.round((n / total) * 100);
+      return `<span><span class="sw" style="background:${hex}"></span>${escapeHtml(species)} — ${pct}% (${n.toLocaleString()})</span>`;
+    }).join('');
+    const otherSpan = otherCount
+      ? `<span><span class="sw" style="background:${OTHER_SPECIES_HEX}"></span>${sorted.length - TOP_SPECIES_N} more species — ${Math.round((otherCount/total)*100)}% (${otherCount.toLocaleString()})</span>`
+      : '';
+    legend.innerHTML = swatches + otherSpan;
   }
 }
 
@@ -513,10 +1466,13 @@ async function loadAndRender(borough, forceRefetch){
     rebuildForest(currentRecords);
     return;
   }
-  setLoading(true, 'Fetching live sample from NYC Open Data…');
-  const offset = Math.floor(Math.random() * 400000);
+  setLoading(true, borough === 'All'
+    ? 'Fetching a live sample from all five boroughs…'
+    : `Fetching a live ${borough} sample from NYC Open Data…`);
   try{
-    const rows = await fetchSample(borough, offset);
+    const rows = borough === 'All'
+      ? await fetchAllBoroughsEvenly()
+      : await fetchSampleSafe(borough, SAMPLE_LIMIT_SINGLE);
     if(!rows.length) throw new Error('empty response');
     cache[key] = rows;
     currentRecords = rows;
@@ -535,6 +1491,26 @@ async function loadAndRender(borough, forceRefetch){
 }
 
 document.getElementById('reseedBtn').addEventListener('click', ()=> loadAndRender(activeBorough, true));
+document.getElementById('recenterBtn').addEventListener('click', recenterView);
+
+/* Compass click resets orientation only (theta back to north-up) — leaves zoom/pan/pitch alone,
+   unlike Recenter which snaps everything back to the view preset. */
+document.getElementById('compassDial').addEventListener('click', ()=>{
+  camTheta = Math.PI / 2;
+  updateCamera();
+});
+
+/* ================= Help modal ================= */
+function openHelp(){ document.getElementById('helpOverlay').classList.add('show'); }
+function closeHelp(){ document.getElementById('helpOverlay').classList.remove('show'); }
+document.getElementById('helpToggle').addEventListener('click', openHelp);
+document.getElementById('helpClose').addEventListener('click', closeHelp);
+document.getElementById('helpOverlay').addEventListener('click', e=>{
+  if(e.target.id === 'helpOverlay') closeHelp();
+});
+document.addEventListener('keydown', e=>{
+  if(e.key === 'Escape') closeHelp();
+});
 
 /* ================= Theme ================= */
 function currentTheme(){ return document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light'; }
@@ -560,9 +1536,14 @@ if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribu
     `STAND · v${APP_VERSION} · Joe.K · <a href="https://axisbim.io" target="_blank" rel="noopener">axisbim.io</a> · data: NYC Open Data, 2015 Street Tree Census`;
   renderBoroughRow();
   renderColorModeRow();
+  renderViewModeRow();
   renderLegend();
+  renderScaleBar();
   initScene();
   loadAndRender('All', true);
+  loadBoroughBoundaries();
+  loadStateContext();
+  loadLongIslandContext();
 })();
 </script>
 </body>
