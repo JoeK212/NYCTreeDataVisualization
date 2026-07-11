@@ -1,10 +1,336 @@
 <!DOCTYPE html>
 <!--
   STAND
-  NYC's 2015 Street Tree Census, grown back as a procedural forest — one branching structure per real tree record.
+  NYC's Street Trees, Grown From the Census — one branching structure per real tree record.
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.15.8 - 2026-07-11 - Rolled back the v1.15.6/v1.15.7 OSM Overpass attempt entirely, at direct
+    request after v1.15.7 (a real, well-reasoned fix for a genuine query-size problem) still showed no
+    visible change. Without a way to test the live fetch from this sandbox (overpass-api.de is blocked
+    at the network egress level here) or get browser console output from the user, continuing to
+    iterate would only be a third round of unverified guessing. Back to the last version confirmed
+    working by direct visual feedback: v1.15.5 (grid removed, all context counties on one consistent
+    nationwide source). loadOsmContext/osmElementsToFeatures/stitchWaysIntoRings all removed; the
+    three context loaders are back to the plain county-file path with no OSM attempt layered on top.
+    The removed implementation (including its standalone-unit-tested ring stitcher) is preserved in
+    this changelog's v1.15.6/v1.15.7 entries and in version control history if real coastline data is
+    worth revisiting later, ideally with actual browser console access to close the loop.
+  v1.15.7 - 2026-07-11 - Screenshot showed no visible change from v1.15.6, meaning the OSM path was
+    silently falling back every time. Couldn't get live confirmation of the exact failure — this
+    sandbox is hard-blocked from overpass-api.de at the network egress level (confirmed via curl:
+    HTTP 403, x-deny-reason: host_not_allowed), and a probe through a different fetch tool that did
+    reach the real server returned a 406 even on Overpass's own documented example query, which reads
+    as that tool's own request headers being incompatible with Overpass's content negotiation, not a
+    real signal about the endpoint. Neither test reliably stands in for a browser's fetch(). Went back
+    through the query itself instead and found a real, concrete design gap: the NJ query requested the
+    entire state as one admin_level=4 relation — Cape May to the NY border, full detail, no bounding-
+    box scoping — while Overpass can't cheaply clip a relation's members to a bbox the way it can for
+    individual ways. That's almost certainly hitting the [timeout:25] cap or returning something too
+    large to parse promptly, causing a silent fallback exactly like what the screenshot showed.
+    Rescoped NJ from one whole-state relation to five coastal counties (Hudson, Bergen, Essex, Union,
+    Passaic) at the same admin_level=6 granularity already working for Westchester/Nassau/Suffolk —
+    comparable query weight to the three regions that were presumably already succeeding, still merged
+    under one "New Jersey" label. Still unverified against the live endpoint from this sandbox; this
+    remains a genuine first real-world test in the browser, not a guaranteed fix.
+  v1.15.6 - 2026-07-11 - Direct ask after v1.15.4: try real coastline data instead of continuing to
+    patch administrative-boundary sources, which have a hard ceiling here — county/state lines are
+    simplified for choropleth-map display, not hydrology, so no county dataset was ever going to trace
+    the Hudson's actual meanders. Added an OSM Overpass query (loadOsmContext) for the same four
+    regions (New Jersey, Westchester, Nassau, Suffolk) as full administrative-boundary relations —
+    OSM's coastal admin boundaries are community-mapped to the real mean-high-water coastline rather
+    than cartographically generalized, so they should trace the Hudson/Sound meaningfully better than
+    a Census choropleth file. Overpass returns boundary relations as many disconnected way segments,
+    not closed rings, so added stitchWaysIntoRings — connects segments by shared OSM node id (not
+    coordinate matching, which floats can quietly break) into closed loops, dropping any chain that
+    never closes rather than rendering a broken shape. Unit-tested the stitcher standalone against
+    synthetic scrambled/reversed segments (correctly reassembled) and a dangling never-closes chain
+    (correctly dropped) before wiring it in. All three loaders try OSM first and fall back to the
+    v1.15.4 county-file path automatically on any failure (network, empty relation, stitch failure) —
+    a bad fetch degrades to the previous known-good map rather than breaking it. Could not test the
+    live Overpass fetch itself from this sandbox (overpass-api.de isn't on its network allowlist) —
+    this is genuinely untested against the real endpoint; check the console for which path each region
+    actually took (an "OSM context fetch failed... falling back" warning means that region is still on
+    county data).
+  v1.15.5 - 2026-07-11 - Direct feedback against a screenshot: a patchy grid pattern visible floating
+    mid-water, away from any coastline. Root cause: the grid was a THREE.GridHelper sized to the
+    original WORLD_SIZE (1200) footprint, and was never widened when v1.14.4 enlarged the water plane
+    to WORLD_SIZE*10 so its edge would sit past the camera's reachable range — leaving an orphaned
+    WORLD_SIZE-sized grid patch with a hard, visible edge floating inside the much larger borderless
+    water plane. A real geometry bug, distinct from the z-fighting/fog issues already fixed for it in
+    v1.13.2/v1.14.3 (those fixed how the grid interacted with other layers, not its own extent).
+    Rather than re-scale it to match, removed the grid outright: it dates to v1.1.0, back when the
+    water plane had no gradient texture and the sky had no rendered gradient either, so a bare
+    point-cloud on flat black genuinely needed a scale/orientation reference. With water, sky, and
+    full geographic context all rendering now, it had no remaining job — its only visible effect left
+    was this artifact. Removed the dead groundGrid variable along with it. audit_deploy.js's
+    historical grid-specific checks (v1.13.2 depthWrite, fog opt-out) updated to assert the grid is
+    gone rather than testing dead code.
+  v1.15.4 - 2026-07-11 - Direct feedback against a screenshot: the Hudson River and Long Island Sound
+    both read as an unnaturally wide, straight-edged wedge instead of real water, right after v1.15.3
+    added Westchester. Root cause wasn't resolution — it was that NJ came from one nationwide Census
+    county file while Westchester/Long Island came from a completely different, independently-
+    simplified dataset (click_that_hood's NY counties file). Two counties that share a real riverbank,
+    generalized by two unrelated simplification passes with no shared vertices, don't track each other
+    along that shared edge. Investigated swapping to real hydrography (Natural Earth's 10m coastline)
+    first, but that's an 18MB global file built for continental-scale maps — too heavy to fetch
+    per-load and too coarse to resolve a river this narrow anyway. Fixed by consolidating: NJ,
+    Westchester, Nassau, and Suffolk now all come from the one nationwide county file NJ already used,
+    so shared river/sound edges are generalized consistently and stop diverging from each other. All
+    three context loaders share a single memoized fetch/cache (one network request instead of three).
+  v1.15.3 - 2026-07-11 - Direct feedback against a screenshot: bare water/grid visible north of the
+    Bronx, all the way up to the top frame edge, with no context land there at all — a genuine gap in
+    real-world Westchester County, not a rendering bug. Context previously only covered two of the
+    three landmasses inside CONTEXT_CLIP_BOX (New Jersey to the west, Long Island to the east);
+    Westchester, directly north, was never fetched. Added loadWestchesterContext, filtering the same
+    NY counties source already used for Long Island (COUNTIES_URL) down to Westchester County and
+    passing it through the existing buildContextGeometry pipeline — same opaque fill, coastline
+    dissolve, and fog:false/depthWrite:false treatment NJ and Long Island already get, so it can't
+    reintroduce the historical seam/z-fighting bugs documented below. Help modal's context-land line
+    updated to mention Westchester and to drop "dashed," stale since v1.12.2 replaced the dashed
+    outline with a solid one.
+  v1.15.2 - 2026-07-11 - Subtitle updated to "NYC's Street Trees, Grown From the Census" (was "NYC
+    Street Tree Census · Grown Back as a Forest") — the STAND name itself stays, since it's already
+    doing the same job as every other tool in the suite (Truth Log, Modulor, Sound/Relief): one plain
+    word carrying a double meaning specific to the piece (a stand of trees / to stand). Updated
+    everywhere the old subtitle appeared: the header <p>, <title>, meta description, and the top-of-
+    file project tagline comment.
+  v1.15.1 - 2026-07-11 - Direct feedback against a screenshot: Recenter wasn't actually centering NYC
+    in frame — the map sat shifted toward the bottom-right with a lot of empty NJ/water space at top-
+    left. Root cause: DEFAULT_TARGET was hardcoded to world origin (0,40,0), which is the center of the
+    *padded* projection box (LAT_MIN/MAX/LON_MIN/MAX, extended north into the Hudson Valley and west
+    into NJ for context — see the v1.9.0 note above project()). That padding was added asymmetrically
+    (north/west sides only; south/east edges stayed at NYC's real bounds), so NYC's own footprint sits
+    in the box's south-east portion, not its center — world origin was never actually NYC's centroid.
+    Fixed by computing the real centroid from boroughLabels (geometry-derived positions already
+    computed per borough, not a guessed lat/lon) once boundary data loads, and correcting
+    DEFAULT_TARGET to match. camTarget follows along too, but only if it's still sitting at the
+    untouched default, so this never clobbers a pan the person already made while boundary data was
+    still loading.
+  v1.15.0 - 2026-07-11 - Two new features. (1) Trunk size filter: a new "Trunk size" panel group with
+    Young/Semi-mature/Mature toggle buttons (SIZE_CLASSES, cutoffs matching NYC's own census size-class
+    convention), filtering by real trunk diameter (rec.dbh). Tracked in its own hiddenSizeClass set,
+    independent of colorMode — combines with whatever Health/Species/Season filtering is active rather
+    than replacing it, same "trunk and canopy both hidden, not just recolored" behavior the existing
+    legend toggles already have. (2) Season canopy color mode: a third Canopy color option alongside
+    Health/Species. Purely a display style — canopy recolored per SEASON_PALETTES (Spring/Summer/Fall/
+    Winter), not tied to any real per-tree attribute, so it has no legend categories to tally or hide;
+    the legend becomes a single-select season picker instead. Each tree's season color is picked from
+    its own seed offset by a fixed constant (SEASON_SEED_OFFSET), not an extra rng() call spliced into
+    the growth stream — deliberately, so switching seasons recolors canopy without ever reshaping
+    branch geometry, and the same tree gets the same look back if you switch away and back.
+  v1.14.5 - 2026-07-11 - Direct feedback against a screenshot: the sunset was still bleeding past the
+    horizon, this time visibly into real water (a river channel fading from blue to gold well before
+    any actual horizon). v1.14.4 fixed the water plane's own finite-edge visibility structurally
+    (enlarged past the camera's far-clip distance), which made the fog originally added for that job
+    (v1.14.1) redundant for hiding the edge — but fog doesn't know the difference between "the plane's
+    unwanted excess" and "an actual river," so it kept fading both toward the sky color as they
+    receded into the distance. Fixed by giving the water material fog:false too, same as every other
+    material in the scene now has. scene.fog itself is left in place (harmless, zero-cost when nothing
+    references it) rather than torn out, in case a future change wants distance haze again — but as of
+    this version, no material in the scene uses it.
+  v1.14.4 - 2026-07-11 - Direct feedback against a screenshot at a wide, low-angle context view: the
+    water plane's own finite edge was visible again, poking up above the land as a hard-edged wedge
+    against the sky. This isn't the same bug v1.14.1's fog fixed (and v1.14.3 didn't regress it either
+    — fog is still correctly scoped to the water plane only). The actual cause: the plane's half-width
+    (960, at the old WORLD_SIZE * 1.6) was smaller than camDist's own max (2200, see the pinch/wheel
+    zoom clamps) — meaning the camera could orbit to a distance beyond the plane's own edge, putting
+    the boundary well within normal viewing range at wide zoom-outs. No fog near/far tuning can hide a
+    boundary the camera can get that close to or past; fog only blends color at a distance, it doesn't
+    relocate geometry. Fixed at the geometry level instead: plane enlarged to WORLD_SIZE * 10 (half-
+    width 6000), comfortably past the camera's own far-clip distance (4000) — so the edge is now
+    clipped by the camera's far plane before it can ever be reached, at any camDist or angle the orbit
+    control allows. Structural fix rather than another round of distance-based tuning.
+  v1.14.3 - 2026-07-11 - Direct feedback against a screenshot: the sunset gradient was bleeding across
+    the land and water surfaces themselves near the visual horizon instead of stopping cleanly at the
+    coastline. Root cause: v1.14.1's fog (added to hide the finite water plane's own far edge) applies
+    per-fragment to every material with fog:true, which is the THREE.js default — so it was also
+    tinting the actual land fill, context fill, borough/context outlines, the grid, and the trees
+    toward the sky's horizon color as their real camera-distance grew near the visual horizon in
+    tilted/wide views (a flat ground plane's real distance from camera increases continuously toward
+    the horizon even at a fixed orbit radius, so this showed up as a soft gold/black wash smeared
+    across a large visible swath of "land," not just a thin edge). Fix: fog:false added explicitly to
+    every material except the water plane's — fillMat, contextFillMat, both outline LineBasicMaterials,
+    the grid, branchMat, and both canopy PointsMaterials. Only the water plane still fades, which was
+    the original and only intended target: its own true edge, far beyond any real mapped river/harbor/
+    ocean content. Land, context, outlines, grid, and trees now render at full, undimmed color all the
+    way to the coastline regardless of camera angle or zoom.
+  v1.14.2 - 2026-07-11 - Direct feedback against a screenshot: replace the flat black sky with a
+    sunset gradient. scene.background swapped from a solid THREE.Color to a small vertical-gradient
+    CanvasTexture (dark upper sky → burnt orange → warm gold at the horizon), sourced from three new
+    --sky-top/--sky-mid/--sky-horizon custom properties so each theme keeps its own palette (dark
+    theme's is a touch deeper/richer) the same way --canvas-bg already did. This is a static,
+    screen-space image, not an equirectangular sky sphere — it doesn't rotate with orbit, a deliberate
+    call consistent with the rest of the scene's lightweight approach (no sky-dome geometry or extra
+    draw calls). v1.14.1's horizon fog now matches --sky-horizon instead of the old flat --canvas-bg,
+    so geometry fading into the distance blends into the gradient's warm lower band instead of the
+    sky's darker upper reaches. Theme toggle regenerates the texture (and refreshes fog to match)
+    instead of just recoloring, disposing the old one first.
+  v1.14.1 - 2026-07-11 - Two fixes from a marked-up screenshot: a ghosted double line running along
+    the coast, and a hard horizontal line where the water plane met the black sky. Ghosting root
+    cause: the context (NJ/Long Island) fill buffers every ring vertex outward from its piece's own
+    centroid by FILL_BUFFER_EPS to hide seams between adjacent county meshes (see v1.13.1) — but that
+    buffer was applied uniformly to EVERY vertex, including true coastline ones, so the fill's actual
+    edge sat a few world units past the outline stroke (built from the unbuffered outerSegs). Invisible
+    at wide zoom, clearly resolvable as two parallel lines once zoomed in close. Fix: classify each
+    ring vertex by its two adjacent edges using the same exterior/interior distinction the dissolve
+    already computes (exteriorSegKeySet) — a vertex is only buffered if at least one adjacent edge is
+    an internal seam; true coastline vertices (both edges exterior) are left exactly where the outline
+    draws them, so fill and outline now coincide along the real coast. Horizon-line root cause: the
+    water plane is large but finite (WORLD_SIZE * 1.6), and its far edge was rendering as a hard
+    straight line against the background. Fix: scene.fog (camera-relative, not world-position-relative
+    — see updateFog), scaled to the current camDist on every updateCamera call so it works at any zoom
+    or pan position without per-view tuning, colored to match --canvas-bg so fogged-out geometry blends
+    seamlessly rather than fading to a mismatched gray. Kept in sync with the background color on
+    theme toggle too.
+  v1.14.0 - 2026-07-11 - Two fixes from direct feedback: "graphics are muddy not clear" and "need a
+    way to turn certain trees on/off". Muddiness root cause: canopy dots alone carry the forest read
+    at any distance beyond BRANCH_VISIBLE_MAX_DIST (branches already hide there, per the v1.x note on
+    updateBranchVisibility) — but the full-density dot cloud (every leaf-generation point, soft
+    feathered sprite, depthWrite:false so nothing occludes anything) was being drawn at EVERY zoom
+    level, including the default 3D view. At city scale that's thousands of overlapping soft-edged,
+    non-depth-sorted sprites blending into each other — exactly what reads as a hazy, indistinct mass
+    instead of individual canopies. Fix: a second, decimated "far" canopy point set (1-in-3 of the
+    full leaf points, larger dots to preserve coverage) rendered with a crisper dot texture (larger
+    solid core, alphaTest cutoff instead of a long soft feather) and depthWrite:true so nearer canopy
+    now properly occludes farther canopy instead of blending through it. updateBranchVisibility (kept
+    as the single call site both other code paths already invoke) now also swaps between the two
+    point sets at the same BRANCH_VISIBLE_MAX_DIST threshold the branch mesh already uses — full-detail
+    soft dots only when zoomed in close enough to also see branch structure, crisp decimated dots
+    otherwise. Click-to-inspect updated to raycast against whichever set is currently visible, each
+    with its own index-aligned record-ref array, so tapping a tree still works at every zoom level.
+    Second fix: legend swatches (both Health and Species modes) are now toggle buttons — click one to
+    hide every tree in that category (trunk + canopy, not just its color) from the scene, click again
+    to bring it back. Hidden state is tracked per color-mode (hiddenHealth / hiddenSpecies sets) so
+    switching modes doesn't clobber either filter, and legend percentages still reflect the full
+    unfiltered sample (filtering is a view, not a re-tally) so the numbers don't shift as you toggle.
+    A "reset filters" link appears in the legend only when something is actually hidden.
+  v1.13.3 - 2026-07-11 - Fourth round: v1.13.2's z-fighting fix cleared the widespread grid tracery,
+    but a follow-up marked-up screenshot (three crops) showed small isolated blue marks still
+    surviving — a stray dot, a short dash, a tiny diagonal line — scattered across NJ's interior with
+    no relationship to any real coastline or county border. Different bug, same family: mainRingOf
+    (added in v1.12.2 to clean up self-touching rings from box-clipping) keeps only the single
+    largest piece after a self-touch split and discards the rest — correct for the outline (a stray
+    secondary loop reads as a floating visual artifact) and for centroids (one label position per
+    feature), but wrong for the fill: a discarded secondary piece was still real, sizeable clipped
+    land, and dropping it left an actual hole in ground coverage exactly there — water/grid showing
+    through as a small mark, positioned wherever that county's clip-induced pinch point happened to
+    land, which is why the marks had no relation to real geography. Fix: buildContextGeometry now
+    keeps clippedRaw (the clipped-but-not-yet-reduced geometry) alongside the existing mainRingOf-
+    reduced version — outline and centroid keep using the reduced single ring as before, but the fill
+    loop now renders every split piece above a tiny noise-floor area (fillPiecesOf) as its own
+    (buffered) mesh, so no real land area is silently dropped from ground coverage just because it
+    wasn't the largest piece of its county.
+  v1.13.2 - 2026-07-11 - Third round on the same underlying complaint: after v1.13.1's per-county
+    banding fix, a follow-up marked-up screenshot showed the tan fill itself now solid and seamless,
+    but a fine grid tracery still visible on top of it over both NJ and Long Island — same visual
+    density over both, which was the key clue, since Long Island is only 2 counties and NJ is ~21;
+    a shared cause pointed at shared world-space geometry rather than anything dataset-specific. Root
+    cause: the world GridHelper's material had transparent/opacity set but never depthWrite:false,
+    unlike every other transparent layer in the scene (water, land/context fill, both outline
+    LineBasicMaterials, canopy points) — an inconsistency, not an intentional choice. That let the
+    grid quietly write real depth values into the depth buffer, even though this scene's whole
+    layering model (water→grid→land→outline→trees) is meant to be ordered entirely by explicit
+    renderOrder, precisely because depth-buffer sorting of transparent geometry isn't reliable at this
+    scale (per the original v1.8.0 note). The land fill sits only 0.05 world units above the grid's
+    y=0 plane; at ~900 world units' camera distance, against a perspective depth buffer whose
+    precision is heavily weighted toward the near plane, that gap was thin enough to round away to
+    noise — many of the fill's fragments directly over a grid line quantized to the same or a
+    "farther" depth than what the grid had already written, lost the depth test, and never drew,
+    leaving the grid showing straight through. Fix: grid.material.depthWrite = false, plus the same
+    missing flag added proactively to both outline LineBasicMaterials (context and NYC borough) before
+    they caused their own version of the same bug against whatever renders after them.
+  v1.13.1 - 2026-07-11 - Follow-up marked-up screenshot after v1.13.0 shipped: the fine grid-tracery
+    seams were gone, but a new, coarser problem appeared — clean-edged bands where grid/water cut
+    straight through the NJ tan land, worst near the top-left. Root cause: v1.13.0's fix walked the
+    dissolved county boundary segments into a single ordered ring, assuming that graph is always a
+    simple cycle. It isn't — real county topology has tripoints (three-plus counties meeting at one
+    vertex) and coastline pinches, which leave branch points of degree >2 in the surviving edge graph
+    once shared borders cancel out. The walk picked one branch arbitrarily at each such point and
+    silently dropped whole side-loops of segments from the fill, while the outline (built from the
+    same segments but unordered, so unaffected) still traced them — exactly the clean-edged missing
+    bands in the screenshot. Reverted to per-feature (per-county) fill meshes, each a real always-
+    valid simple polygon with no graph-walking involved, and re-solved the original seam problem
+    (v1.13.0's actual motivation) a different way: buffer each ring outward from its own centroid by
+    a small fixed world-space epsilon (3 units, invisible at WORLD_SIZE=1200 scale) before
+    triangulating, so adjacent counties overlap slightly instead of merely touching — that overlap
+    reliably swallows the WebGL antialiasing crack between independently-triangulated meshes
+    regardless of topology, without needing the geometry to merge into one mesh at all.
+  v1.13.0 - 2026-07-11 - Direct feedback on a marked-up screenshot: "surfaces are partial submerged —
+    cut out water, grid, they interfere with tan land" over both NJ and Long Island. Root cause wasn't
+    opacity alone (already at 92% since v1.12.0) but geometry: the tan fill was ~21 separate per-county
+    meshes (one polygonFillMesh call per county), and even though adjacent counties' shared border
+    vertices match exactly at dissolve precision — that's what lets the outline's edge-cancel trick
+    work — two independently-triangulated meshes that merely touch along a shared edge still leave a
+    hairline antialiasing seam right at that edge, since each mesh's edge coverage is sampled on its
+    own and the two don't sum to fully opaque. Multiply that by ~20 internal county-to-county borders
+    and the seams trace the whole county network — exactly the grid-like tracery in the screenshot,
+    with water and grid showing through along every line. Fixed by not meshing per county at all: added
+    orderSegmentsIntoRing to walk the same dissolved outer-boundary segments the outline already
+    computes (every internal seam has already canceled out of that set) into one ordered ring, and
+    built a single unbroken fill mesh from it — one mesh means no internal seam is possible, and fill
+    and outline now share the exact same edge coordinates by construction. Also raised contextFillMat
+    opacity 0.92→1.0 to match NYC's own land fill (same fix v1.12.0 already applied there, same
+    reasoning: no reason for water or grid to show through either layer) as a second, independent layer
+    of protection against any residual edge blending.
+  v1.12.2 - 2026-07-10 - Direct feedback on a marked-up screenshot: remove the dashed NJ outline
+    entirely, and give the tan context fill a solid outline where it actually meets water, matching
+    NYC's own boroughs. The dashed line was a leftover from v1.12.1's fillOnly/outlineOnly split —
+    accurate county fill, but a separately-sourced coarse outline that visibly didn't trace the same
+    edge (that mismatch is exactly what got circled). Removed the second data source entirely and
+    replaced it with a proper dissolve: collect every edge segment across all of NJ's ~21 clipped
+    county rings, canonicalize each one (sorted, rounded endpoints) so the same real-world edge matches
+    regardless of which polygon or winding direction contributed it, and keep only segments that appear
+    exactly once. A county-to-county border gets contributed once by each neighbor (count 2) and drops
+    out; a real coastline edge — or an edge from our own box-clip, which in-scene is also a tan/water
+    boundary — only appears once and survives. Outline is now solid (LineBasicMaterial, matching
+    buildBoundaryGeometry's own NYC outline treatment) instead of dashed, since it's no longer a
+    separate approximate reference layer. Investigating the same screenshot's "cut out water" callout
+    (a small stray outline loop floating in open water near Long Island) turned up a related dissolve
+    edge case: a feature's clipped ring can produce several visually disconnected loops (a real harbor
+    mouth pinching, a Sutherland–Hodgman box-clip artifact, or a coordinate mismatch between two
+    adjacent counties' shared border) — confirmed directly by inspecting Long Island's dissolved output,
+    which came out to one ~470-unit main coastline plus three small stray loops, one under 15 units
+    across. Added largestConnectedComponent to keep only the single largest connected loop per context
+    group; the map was never trying to render every small inlet at this zoom level anyway.
+  v1.12.1 - 2026-07-10 - Direct feedback against a real map screenshot: "Staten Island and Hudson
+    River" specifically. Root cause was resolution, not the clip-box/opacity issues fixed in v1.12.0 —
+    NJ was built from a single statewide polygon (us-states.json), 32 points for the entire state,
+    Cape May to the NY border. Fine for a national map, nowhere near enough to represent the harbor:
+    no Bayonne peninsula, no Kill Van Kull/Arthur Kill (the straits that actually separate NJ from
+    Staten Island), and a Hudson-facing shoreline (Weehawken/Hoboken/Jersey City) drawn as a near-
+    straight line. Switched NJ's fill to a county-level dataset (all 21 NJ counties, same clip/merge
+    pipeline already used for Long Island's two counties) — Hudson County alone carries 34 points, more
+    detail than the old file gave the whole state, and its ring shows the Bayonne peninsula's real
+    southward dip toward Staten Island. That source is nationwide (~3.2MB, no smaller CORS-friendly
+    NJ-only county file turned up), so the post-filter NJ-only result is cached in localStorage after
+    first load. Kept the original single-polygon state file, but now used *only* for the dashed
+    outline + label (buildContextGeometry's new fillOnly/outlineOnly split) — otherwise merging 21
+    counties' shared borders into one line pass would have drawn ~20 internal county-to-county seams
+    as extra dashed clutter that was never part of the real coastline.
+  v1.12.0 - 2026-07-10 - Three fixes, all from direct visual feedback on the same underlying pair of
+    bugs: NJ still wasn't reading as land, and blue water was showing through parts of Queens/Long
+    Island/NJ that should have been solid ground. (1) Root-caused NJ specifically: dumped the actual
+    clipped-polygon bounding box to the console and found it spanning x:[-1480, 276] in world units —
+    v1.11.0's CONTEXT_CLIP_BOX margins (0.55°/0.85°/0.35°/0.25°) were sized in degrees but never
+    converted against this projection's actual scale (~1600 world units per degree of longitude,
+    since WORLD_SIZE=1200 covers only ~0.75° of lon), so a "modest" 0.55° margin turned into ~880
+    world units — nearly double the camera's entire visible half-width. Almost the whole NJ shape was
+    landing off-canvas; only a thin, often-empty sliver ever crossed into frame, so no fill opacity
+    could have fixed it. Re-derived the margins in world-space terms instead of copying a fixed degree
+    offset. (2) Even the portion of NJ/Long Island that WAS on-canvas was hard to read as land:
+    blending contextFillMat's 38% opacity brown (#4A4230) over the water gradient's dark navy
+    (#122A3B/#0A1826) lands close enough in hue/luminance to the water itself to still read as "water"
+    at a glance — confirmed by computing the actual blended RGB. Raised to 92% opacity (still a hair
+    under NYC's fully-opaque primary land, so context stays visually secondary by hue, not by being
+    half-invisible) and raised NYC's own primary land fill 0.94→1.0 so it can never show any water
+    through it either. (3) Separately, swapped the borough-boundary decimation (used for real NYC
+    coastline data) from uniform every-Nth-point sampling to Ramer–Douglas–Peucker simplification —
+    the old method thinned small sharp coastal features (Rockaway peninsula, Jamaica Bay's marsh
+    islands, etc.) by the same ratio as long straight stretches, which can flatten exactly the kind of
+    small feature most likely to leave a gap where water shows through; RDP keeps points that deviate
+    from the local straight line and thins the rest, preserving those features while still cutting
+    long redundant runs.
   v1.11.0 - 2026-07-10 - Two more fixes from direct visual feedback: (1) NJ/Long Island were rendering
     as huge disproportionate wedges — root cause: the real NJ polygon runs all the way to Cape May
     (lat ~39.0, over 2° south of the map) and Suffolk County's runs to Montauk (lon ~-71.8), so the
@@ -133,12 +459,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="description" content="NYC's Street Tree Census grown back as a procedural forest — real tree records rendered as seeded branching structures.">
+<meta name="description" content="NYC's street trees, grown from the census — real tree records rendered as seeded branching structures.">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Stand">
 <meta name="theme-color" content="#F1EBDD" id="themeColorMeta">
-<title>STAND — NYC Street Tree Census, Grown</title>
+<title>STAND — NYC's Street Trees, Grown From the Census</title>
 <style>
   :root{
     --paper: #F1EBDD;
@@ -153,6 +479,9 @@
     --brick: #B23A2E;       /* Poor health */
     --prussian:#1f4e79;
     --canvas-bg: #14110D;
+    --sky-top: #15101C;
+    --sky-mid: #C9683A;
+    --sky-horizon: #F2C879;
     --shadow: 0 1px 0 rgba(33,29,22,0.05), 0 6px 16px -8px rgba(33,29,22,0.28);
     --font-display: 'Fraunces', serif;
     --font-body: 'Source Serif 4', Georgia, serif;
@@ -172,6 +501,9 @@
     --brick: #E0685A;
     --prussian:#5E9BD0;
     --canvas-bg: #0A0906;
+    --sky-top: #0A0710;
+    --sky-mid: #B33A1E;
+    --sky-horizon: #D9A03D;
   }
 
   *{box-sizing:border-box;}
@@ -294,8 +626,18 @@
   .spinner{width:22px; height:22px; border:2px solid rgba(241,235,221,.25); border-top-color:var(--accent); border-radius:50%; animation:spin 0.9s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
 
-  .legend{display:flex; gap:16px; flex-wrap:wrap; margin-top:12px; font-family:var(--font-ui); font-size:12px; color:var(--ink-soft);}
-  .legend .sw{display:inline-block; width:10px; height:10px; margin-right:6px; vertical-align:-1px;}
+  .legend{display:flex; gap:16px; flex-wrap:wrap; align-items:center; margin-top:12px; font-family:var(--font-ui); font-size:12px; color:var(--ink-soft);}
+  .legend .sw{display:inline-block; width:10px; height:10px; margin-right:6px; vertical-align:-1px; border-radius:1px;}
+  /* v1.14.0: legend swatches are now toggle buttons — click to hide/show that category's trees. */
+  .legend .item{background:none; border:none; padding:0; margin:0; font:inherit; color:inherit; cursor:pointer; display:inline-flex; align-items:center;}
+  .legend .item:hover{color:var(--ink);}
+  .legend .item.off{opacity:.4; text-decoration:line-through;}
+  .legend .item.off .sw{box-shadow:inset 0 0 0 1px var(--ink-soft); background-color:transparent !important;}
+  /* v1.15.0: season picker is single-select, not toggle-hide — active gets a solid underline instead
+     of the .off treatment above (which means "hidden," the opposite of what "selected" should read as). */
+  .legend .item.season-item{padding:2px 6px; border-radius:3px;}
+  .legend .item.season-item.active{background:var(--paper-deep); color:var(--ink); box-shadow:inset 0 0 0 1px var(--accent);}
+  .legend .reset-link{background:none; border:none; padding:0; margin:0; font:inherit; color:var(--accent, #C8932A); cursor:pointer; text-decoration:underline;}
 
   footer.foot{
     text-align:center; padding:16px 12px calc(28px + env(safe-area-inset-bottom));
@@ -336,7 +678,7 @@
 
 <header class="top">
   <h1>STAND</h1>
-  <p>NYC Street Tree Census · Grown Back as a Forest</p>
+  <p>NYC's Street Trees, Grown From the Census</p>
   <button class="theme-toggle" id="helpToggle" style="right:64px;" aria-label="Help" title="What is this / how to read it">?</button>
   <button class="theme-toggle" id="themeToggle" aria-label="Toggle dark mode" title="Toggle light/dark theme">🌙</button>
 </header>
@@ -351,6 +693,10 @@
     <div class="group">
       <label>Canopy color</label>
       <div class="row" id="colorModeRow"></div>
+    </div>
+    <div class="group">
+      <label>Trunk size</label>
+      <div class="row" id="sizeRow"></div>
     </div>
     <div class="group">
       <label>Sample</label>
@@ -408,10 +754,13 @@
     <ul>
       <li>Outlines are the official NYC borough boundaries — water is already excluded, so gaps between shapes are rivers/harbor, not missing data.</li>
       <li>The blue underneath is a rendered water base, not photography — it's there so land reads as solid against the harbor and rivers.</li>
-      <li>The dashed outlines are New Jersey (west) and Long Island's Nassau/Suffolk counties (east) — geographic context only, neither has tree data of its own. Long Island's real coastline extends past the default view; pan or zoom out to see the North and South Forks.</li>
+      <li>The tan land beyond the boroughs — New Jersey (west), Westchester (north), and Long Island's Nassau/Suffolk counties (east) — is geographic context only, none of it has tree data of its own. Long Island's real coastline extends past the default view; pan or zoom out to see the North and South Forks.</li>
       <li><b>Canopy color — Health</b>: green = Good, ochre = Fair, red = Poor, grey = Unknown.</li>
       <li><b>Canopy color — Species</b>: each species gets a consistent hue; the legend below the map shows the top species in the current sample.</li>
-      <li>Branch <i>diameter</i> and depth scale with the tree's real trunk diameter (DBH) — bigger, older trees grow taller, more branched structures. Branch geometry only renders once you're zoomed in close (from far away, thousands of overlapping branches just read as a muddy blob, so canopy dots alone carry the view).</li>
+      <li><b>Legend swatches are toggles</b>: click any entry in the legend to hide every tree in that category (trunk and canopy) from the map; click again to bring it back. A "reset filters" link appears once something is hidden.</li>
+      <li><b>Canopy color — Season</b>: purely a display style, not real census data — each tree is recolored for Spring/Summer/Fall/Winter. Pick a season from the legend below; there's nothing to toggle here since it's not a per-tree category.</li>
+      <li><b>Trunk size</b> filters by real trunk diameter (Young/Semi-mature/Mature) — independent of and combinable with whatever's in the Canopy color legend above.</li>
+      <li>Branch <i>diameter</i> and depth scale with the tree's real trunk diameter (DBH) — bigger, older trees grow taller, more branched structures. Branch geometry only renders once you're zoomed in close; from farther out, canopy switches to a sparser, crisper dot set built specifically to stay legible at that distance rather than blur into a solid mass.</li>
       <li>The scale bar and borough labels are derived from the real lat/long projection, not estimated.</li>
     </ul>
     <h3>Controls</h3>
@@ -430,7 +779,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.11.0';
+const APP_VERSION = '1.15.8';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -473,6 +822,25 @@ function speciesColor(spc){
   return c;
 }
 const BARK_COLOR = new THREE.Color(0x9C8468);
+
+// v1.15.0: "Season" is a third canopy color mode — purely a display style, not tied to any real
+// census attribute (unlike health/species), so it has no legend categories to toggle. Each tree picks
+// one color from the active season's palette using its own seed offset by a fixed constant, so the
+// pick is stable across rebuilds and re-renders but never touches the growth RNG stream that shapes
+// branch geometry (see growTree — mixing an extra rng() call into that stream would reshape trees
+// every time the season changed, which nothing about "recolor the canopy" should do).
+const SEASON_PALETTES = {
+  spring: [0xF2C6D9, 0xF5EDE0, 0xB7D98A, 0xE8A9C2],
+  summer: [0x2F5233, 0x3A6B3E, 0x4C7A3A, 0x355E2E],
+  fall:   [0xC9683A, 0xD9822B, 0xB23A2E, 0xE0AE52],
+  winter: [0x8A7E68, 0x7A6E5C, 0x6E6252, 0x9C8468]
+};
+const SEASON_SEED_OFFSET = 0x51ED270B;
+function seasonColor(seed, season){
+  const palette = SEASON_PALETTES[season] || SEASON_PALETTES.summer;
+  const pick = mulberry32(seed ^ SEASON_SEED_OFFSET)();
+  return new THREE.Color(palette[Math.floor(pick * palette.length)]);
+}
 
 // In Species color mode, giving every distinct species its own hash-derived hue produces dozens of
 // unlabeled colors the legend can't possibly list (that's the "purple and pink with nothing in the
@@ -534,6 +902,8 @@ function growTree(rec, out){
   if(out.colorMode === 'species'){
     const isTop = out.topSpeciesSet && out.topSpeciesSet.has(rec.species);
     canopyColor = isTop ? speciesColor(rec.species) : OTHER_SPECIES_COLOR;
+  } else if(out.colorMode === 'season'){
+    canopyColor = seasonColor(seed, out.season);
   } else {
     canopyColor = healthColor;
   }
@@ -718,22 +1088,66 @@ function extractBoroughFeature(row){
   return (geometry && name) ? {properties:{boro_name:name}, geometry} : null;
 }
 
-// Reduce point count without depending on any server-side function — keep every Nth vertex
-// (always keeping the first/last of each ring so shapes stay closed).
-function decimateRing(ring, keepEvery){
-  if(ring.length <= keepEvery * 3) return ring;
-  const out = [];
-  for(let i=0;i<ring.length;i++){
-    if(i % keepEvery === 0 || i === ring.length-1) out.push(ring[i]);
+// Reduce point count without depending on any server-side function.
+//
+// v1.12.0: this used to keep every Nth vertex regardless of local shape — fine for a smooth curve,
+// but NYC's real coastline (Queens' Rockaway peninsula, Jamaica Bay's marsh islands, the Bronx's
+// shoreline islands, etc.) has lots of small, sharp features living in short runs of points. Uniform
+// Nth-point sampling cuts those runs down by the same ratio as long straight stretches, which can
+// collapse a small peninsula/inlet into a nub or a straight line that no longer matches the actual
+// land fill's silhouette — a very plausible source of "blue water" appearing inside what should be
+// solid borough land near complex coast segments. Switched to Ramer–Douglas–Peucker: it keeps a
+// point only if it deviates from the straight line between its neighbors by more than the tolerance,
+// so long straight runs still get thinned hard while small sharp features (the exact spots most
+// likely to produce a visible gap) are preserved. Iterative (explicit stack), not recursive, since a
+// real coastline ring can have thousands of points.
+function pointToSegmentDist(p, a, b){
+  const [px,py] = p, [ax,ay] = a, [bx,by] = b;
+  const dx = bx-ax, dy = by-ay;
+  if(dx === 0 && dy === 0) return Math.hypot(px-ax, py-ay);
+  const t = Math.max(0, Math.min(1, ((px-ax)*dx + (py-ay)*dy) / (dx*dx+dy*dy)));
+  return Math.hypot(px - (ax+t*dx), py - (ay+t*dy));
+}
+function rdpSimplify(points, epsilon){
+  const n = points.length;
+  if(n < 3) return points.slice();
+  const keep = new Uint8Array(n);
+  keep[0] = 1; keep[n-1] = 1;
+  const stack = [[0, n-1]];
+  while(stack.length){
+    const [s, e] = stack.pop();
+    if(e <= s+1) continue;
+    let maxDist = 0, idx = -1;
+    for(let i=s+1;i<e;i++){
+      const d = pointToSegmentDist(points[i], points[s], points[e]);
+      if(d > maxDist){ maxDist = d; idx = i; }
+    }
+    if(maxDist > epsilon){
+      keep[idx] = 1;
+      stack.push([s, idx], [idx, e]);
+    }
   }
+  const out = [];
+  for(let i=0;i<n;i++) if(keep[i]) out.push(points[i]);
   return out;
 }
-function decimateGeometry(geom, keepEvery){
+// Tolerance in degrees. At this projection's scale (~1600 world units per degree of longitude),
+// 0.00025° ≈ 0.4 world units — well under a pixel at any normal zoom level, so this thins redundant
+// near-collinear points without visibly altering the coastline.
+const SIMPLIFY_TOLERANCE_DEG = 0.00025;
+function decimateRing(ring, epsilon){
+  if(ring.length <= 4) return ring; // already at or below minimal representable ring size
+  const simplified = rdpSimplify(ring, epsilon);
+  const first = simplified[0], last = simplified[simplified.length-1];
+  if(first[0] !== last[0] || first[1] !== last[1]) simplified.push([first[0], first[1]]);
+  return simplified.length >= 4 ? simplified : ring; // guard against over-simplifying to a degenerate ring
+}
+function decimateGeometry(geom, epsilon){
   if(geom.type === 'Polygon'){
-    return {type:'Polygon', coordinates: geom.coordinates.map(r => decimateRing(r, keepEvery))};
+    return {type:'Polygon', coordinates: geom.coordinates.map(r => decimateRing(r, epsilon))};
   }
   if(geom.type === 'MultiPolygon'){
-    return {type:'MultiPolygon', coordinates: geom.coordinates.map(poly => poly.map(r => decimateRing(r, keepEvery)))};
+    return {type:'MultiPolygon', coordinates: geom.coordinates.map(poly => poly.map(r => decimateRing(r, epsilon)))};
   }
   return geom;
 }
@@ -750,7 +1164,7 @@ async function loadBoroughBoundaries(){
     const features = rows
       .map(extractBoroughFeature)
       .filter(Boolean)
-      .map(f => ({ properties: f.properties, geometry: decimateGeometry(f.geometry, 6) }));
+      .map(f => ({ properties: f.properties, geometry: decimateGeometry(f.geometry, SIMPLIFY_TOLERANCE_DEG) }));
     if(!features.length) throw new Error('no row had both a recognizable borough name and a geometry object — got keys: ' + Object.keys(rows[0] || {}).join(', '));
     buildBoundaryGeometry(features);
   } catch(err){
@@ -760,16 +1174,55 @@ async function loadBoroughBoundaries(){
   }
 }
 
-// Surrounding geographic context — New Jersey (state) and Long Island's Nassau/Suffolk counties
+// Surrounding geographic context — New Jersey (by county) and Long Island's Nassau/Suffolk counties
 // (the non-NYC part of Long Island; Brooklyn/Queens are already shown as primary NYC data). Both are
 // public, CORS-verified GeoJSON sources, kept entirely separate from the NYC borough pipeline: this
 // is reference context, not primary data, so a failure here is silent (console only, no toast).
-const STATES_URL = 'https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json';
-const CONTEXT_STATES = ['New Jersey'];
-const COUNTIES_URL = 'https://raw.githubusercontent.com/codeforamerica/click_that_hood/master/public/data/new-york-counties.geojson';
-const LONG_ISLAND_COUNTIES = ['Nassau County', 'Suffolk County'];
+//
+// v1.15.4: direct feedback against a screenshot — the Hudson River (between NJ and Westchester) and
+// the Long Island Sound coastline both read as a crude, unnaturally wide wedge instead of real water.
+// Root cause: NJ came from this nationwide Census county file, but Westchester/Long Island came from
+// a completely different, independently-simplified dataset (click_that_hood's NY counties file, see
+// the removed COUNTIES_URL below). Two counties that share a real riverbank, generalized by two
+// unrelated simplification passes with no shared vertices, don't track each other along that shared
+// edge — that mismatch, not resolution, is what opened into a wedge-shaped gap. Fix: every context
+// county (NJ + Westchester + Nassau + Suffolk) now comes from this one nationwide file, so shared
+// river/sound edges are generalized consistently and no longer diverge from each other.
+const NJ_COUNTIES_URL = 'https://raw.githubusercontent.com/plotly/datasets/master/geojson-counties-fips.json';
+const NJ_STATE_FIPS = '34';
+const NY_STATE_FIPS = '36';
+// This source is nationwide (~3.2MB) since no smaller CORS-friendly file covering both NJ and NY
+// counties at comparable resolution was found — heavy for a one-time context fetch, so the
+// post-filter NJ+NY-only result (~83 features, a few hundred KB) is cached in localStorage after the
+// first successful load. Bumped to v2 (was NJ-only, v1.15.4 widened it to also cover NY) so a stale
+// v1 cache never gets reused for the NY counties it doesn't contain.
+const NJ_CONTEXT_CACHE_KEY = 'stand_context_counties_v2';
+const LONG_ISLAND_COUNTIES = ['Nassau', 'Suffolk'];
+// v1.15.3: direct feedback against a screenshot — the area directly north of the Bronx, up to the
+// top frame edge, was bare water/grid with no context land at all. Root cause: context only ever
+// covered NJ (west) and Long Island (east) — nothing was ever fetched for the third landmass inside
+// CONTEXT_CLIP_BOX, Westchester County, so that whole region had no fill geometry to draw in the
+// first place. Not a fill-vs-water z-fighting bug (unlike the historical NJ/LI seam issues below) —
+// there was simply no land mesh present for water/grid to show through instead of. Now sourced from
+// the same nationwide file as NJ/Long Island (see v1.15.4 note above), same buildContextGeometry
+// pipeline, so it inherits the same opaque fill / coastline-dissolve / fog:false / depthWrite:false
+// treatment automatically.
+const WESTCHESTER_COUNTIES = ['Westchester'];
+// v1.12.0: opacity 0.38 was the other half of the "NJ doesn't look like land" bug — blending a dark
+// olive-brown at 38% over the water gradient's dark navy (#122A3B/#0A1826) lands close enough in
+// luminance/hue to the water itself that it read as "still water" at a glance, independent of the
+// clip-box problem fixed above. Raised to near-opaque, matching the direct ask ("be brown fill like
+// the NYC boroughs") — kept a hair under NYC's fully-opaque 1.0 and a lighter/warmer hue so context
+// still reads as secondary on close inspection, without being invisible from a normal viewing distance.
+// v1.13.0: that remaining 8% gap turned out to matter — direct feedback against a marked-up
+// screenshot showed water/grid still faintly visible through the tan fill as a grid-like tracery.
+// Two contributing causes (see buildContextGeometry below for the bigger one): even where the fill
+// was a single unbroken sheet, 92% opacity alone let enough of the water's dark navy through to be
+// visible at the color contrast in play here. Matched NYC's own land fill exactly (1.0) — same
+// reasoning as v1.12.0's fix to that layer: there's no reason for any water or grid to show through
+// context land either. Hue (not opacity) still carries the "secondary" read against NYC's own fill.
 const contextFillMat = new THREE.MeshBasicMaterial({
-  color: 0x4A4230, transparent: true, opacity: 0.38, side: THREE.DoubleSide, depthWrite: false
+  color: 0x4A4230, transparent: true, opacity: 1.0, side: THREE.DoubleSide, depthWrite: false, fog: false
 });
 
 // NJ's real polygon runs all the way to Cape May (lat ~39.0) and Suffolk County's runs to Montauk
@@ -777,7 +1230,16 @@ const contextFillMat = new THREE.MeshBasicMaterial({
 // disproportionate shape (the entire state/county at the same scale as five NYC boroughs). Clipping
 // to a generous-but-local box keeps context proportionate: still extends a bit past the primary
 // frame, but not for hundreds of real miles.
-const CONTEXT_CLIP_BOX = { lonMin: LON_MIN - 0.55, lonMax: LON_MAX + 0.85, latMin: LAT_MIN - 0.35, latMax: LAT_MAX + 0.25 };
+//
+// v1.12.0 fix: the v1.11.0 margins (0.55/0.85/0.35/0.25°) were still degree-sized, not world-sized —
+// at this projection's scale (~1600 world units per degree of longitude, since WORLD_SIZE=1200 spans
+// only ~0.75° of lon) a 0.55° margin balloons into ~880 world units, more than the camera's entire
+// visible half-width (~600). Verified directly: the clipped NJ shape's own bounding box came out to
+// x:[-1480, 276] — i.e. the vast majority of "New Jersey" was landing off-canvas, so only a thin,
+// often-empty sliver ever crossed into the visible frame, which is why the fill read as "still
+// water" no matter what its opacity was. Margins below are chosen to stay just past the primary
+// frame edge in WORLD units, not to reproduce a fixed degree offset.
+const CONTEXT_CLIP_BOX = { lonMin: LON_MIN - 0.25, lonMax: LON_MAX + 0.45, latMin: LAT_MIN - 0.28, latMax: LAT_MAX + 0.15 };
 
 function lerpOnEdge(a, b, axis, value){
   const idx = axis === 'lon' ? 0 : 1;
@@ -824,16 +1286,54 @@ function clipGeometryToBox(geom, box){
   return null;
 }
 
+// v1.15.8: reverted the v1.15.6/v1.15.7 OSM Overpass attempt entirely. Rescoping the NJ query in
+// v1.15.7 (whole-state relation → five counties) was a real, well-reasoned fix for a real problem,
+// but the map still showed no change after shipping it — meaning either that fix wasn't the actual
+// cause, or something else in the OSM path is failing too. Without the ability to test the live
+// fetch from this sandbox (overpass-api.de is blocked at the network egress level here) or get
+// browser console output from the user, further iteration would just be more unverified guessing
+// stacked on top of two prior rounds of it. Rolled back to the last version confirmed working by
+// direct visual feedback (v1.15.5: grid removed, all context counties on one consistent source) — a
+// verified-good map beats a third unverified attempt. The full stitchWaysIntoRings/osmElementsToFeatures/
+// loadOsmContext implementation is preserved in git history (see the v1.15.6/v1.15.7 changelog
+// entries above) if real coastline data is worth revisiting later — ideally with actual browser
+// console access to close the loop next time.
+
+// v1.15.4: all three context regions now share one fetch of the nationwide county file — a single
+// promise memoized at module scope so NJ, Westchester, and Long Island's loaders (which all run
+// concurrently at boot) trigger exactly one network request between them, not three, and all filter
+// off the same in-memory feature list so their shared river/sound edges are guaranteed consistent.
+let contextCountiesPromise = null;
+function loadContextCounties(){
+  if(contextCountiesPromise) return contextCountiesPromise;
+  contextCountiesPromise = (async () => {
+    const cached = localStorage.getItem(NJ_CONTEXT_CACHE_KEY);
+    if(cached) return JSON.parse(cached);
+    const res = await fetch(NJ_COUNTIES_URL);
+    if(!res.ok) throw new Error('county boundary request failed: ' + res.status);
+    const geo = await res.json();
+    const features = (geo.features || []).filter(f => f.properties &&
+      (f.properties.STATE === NJ_STATE_FIPS || f.properties.STATE === NY_STATE_FIPS));
+    if(!features.length) throw new Error('no NJ/NY county features in response');
+    try{ localStorage.setItem(NJ_CONTEXT_CACHE_KEY, JSON.stringify(features)); }
+    catch(e){ /* storage full or unavailable — non-fatal, just means next load re-fetches */ }
+    return features;
+  })();
+  return contextCountiesPromise;
+}
+
 async function loadStateContext(){
   try{
-    const res = await fetch(STATES_URL);
-    if(!res.ok) throw new Error('state boundary request failed: ' + res.status);
-    const geo = await res.json();
-    const features = (geo.features || []).filter(f => CONTEXT_STATES.includes(f.properties && f.properties.name));
-    if(!features.length) throw new Error('no matching state features in response');
-    buildContextGeometry(features, f => f.properties.name);
+    const features = (await loadContextCounties())
+      .filter(f => f.properties.STATE === NJ_STATE_FIPS);
+    if(!features.length) throw new Error('no NJ county features in response');
+    // All 21 NJ counties are passed through; buildContextGeometry's box-clip drops the ones (Cape
+    // May, Salem, etc.) that don't reach anywhere near the frame, same as it always has for NJ. The
+    // outline now dissolves out the county-to-county seams itself (see buildContextGeometry), so
+    // there's no separate lower-resolution outline source to fetch anymore.
+    buildContextGeometry(features, () => 'New Jersey');
   } catch(err){
-    console.warn('STAND: state context fetch failed (New Jersey outline omitted) —', err.message);
+    console.warn('STAND: NJ context fetch failed (New Jersey omitted) —', err.message);
   }
 }
 
@@ -841,10 +1341,8 @@ async function loadStateContext(){
 // the portion near NYC (western Nassau, a bit of Suffolk) is shown, kept proportionate to the frame.
 async function loadLongIslandContext(){
   try{
-    const res = await fetch(COUNTIES_URL);
-    if(!res.ok) throw new Error('county boundary request failed: ' + res.status);
-    const geo = await res.json();
-    const features = (geo.features || []).filter(f => LONG_ISLAND_COUNTIES.includes(f.properties && f.properties.name));
+    const features = (await loadContextCounties())
+      .filter(f => f.properties.STATE === NY_STATE_FIPS && LONG_ISLAND_COUNTIES.includes(f.properties.NAME));
     if(!features.length) throw new Error('no matching county features in response');
     buildContextGeometry(features, () => 'Long Island'); // merge both counties under one label
   } catch(err){
@@ -852,50 +1350,303 @@ async function loadLongIslandContext(){
   }
 }
 
+// v1.15.3: third context landmass — Westchester County, directly north of the Bronx.
+async function loadWestchesterContext(){
+  try{
+    const features = (await loadContextCounties())
+      .filter(f => f.properties.STATE === NY_STATE_FIPS && WESTCHESTER_COUNTIES.includes(f.properties.NAME));
+    if(!features.length) throw new Error('no matching county features in response');
+    buildContextGeometry(features, () => 'Westchester');
+  } catch(err){
+    console.warn('STAND: Westchester context fetch failed (outline omitted) —', err.message);
+  }
+}
+
+// v1.12.2: direct feedback against a marked-up screenshot — remove the dashed line entirely (it came
+// from a different, coarser source than the fill and visibly didn't trace the same edge), and instead
+// give the tan context fill a solid white-ish outline exactly where it meets water, matching how NYC's
+// own boroughs are already drawn. The one wrinkle: NJ's fill is now ~21 separate county polygons, and
+// a naive "outline every ring" pass would draw all ~20 county-to-county internal borders too — lines
+// that don't touch water at all and were never part of the coastline. Fixed with a standard polygon-
+// dissolve trick: collect every edge segment across every clipped ring in the group, canonicalize each
+// one so the same real-world edge matches regardless of which polygon or winding direction it came
+// from, and keep only the segments that appear exactly once. A shared county-to-county border gets
+// contributed once by each of its two neighboring counties (count 2) and drops out; a real coastline
+// edge — or an edge introduced by our own box-clip, which in-scene is also a tan/water boundary — is
+// only ever contributed once (count 1) and survives.
+function segKey(a, b){
+  const PRECISION = 1e6; // ~0.11m at this latitude — well below real coordinate noise, safely exact
+  const ra = [Math.round(a[0]*PRECISION), Math.round(a[1]*PRECISION)];
+  const rb = [Math.round(b[0]*PRECISION), Math.round(b[1]*PRECISION)];
+  const [p, q] = (ra[0] < rb[0] || (ra[0] === rb[0] && ra[1] < rb[1])) ? [ra, rb] : [rb, ra];
+  return p[0] + ',' + p[1] + '|' + q[0] + ',' + q[1];
+}
+function outerBoundarySegments(rings){
+  const counts = new Map();
+  rings.forEach(ring => {
+    for(let i=1;i<ring.length;i++){
+      const a = ring[i-1], b = ring[i];
+      const key = segKey(a, b);
+      const rec = counts.get(key);
+      if(rec) rec.count++; else counts.set(key, {count: 1, a, b});
+    }
+  });
+  const out = [];
+  counts.forEach(rec => { if(rec.count === 1) out.push([rec.a, rec.b]); });
+  return out;
+}
+
+// A single feature's clipped ring can still emit a dissolved outline that reads as several visually
+// disconnected loops — a real coastline pinching at a narrow harbor mouth our decimation smoothed
+// over, a Sutherland–Hodgman box-clip artifact where a concave shape re-crosses the clip edge, or a
+// coordinate mismatch between two adjacent source features along their shared border (the dissolve
+// above only cancels a seam if both sides' clipped coordinates match exactly). Confirmed directly:
+// Long Island's dissolve produced one ~470-unit-wide main coastline plus three small stray loops (one
+// under 15 world units across) sitting in open water — exactly the floating fragment flagged on a
+// marked-up screenshot ("cut out water"). Rather than root-cause which of those three causes applies
+// per fragment, keep only the single largest connected loop group — at this zoom/scale the context
+// layer was never trying to render every small inlet or islet anyway.
+function largestConnectedComponent(segs){
+  const parent = new Map();
+  const keyOf = p => Math.round(p[0]*1e6) + ',' + Math.round(p[1]*1e6);
+  function find(k){
+    let r = k;
+    while(parent.get(r) !== r) r = parent.get(r);
+    let cur = k;
+    while(parent.get(cur) !== r){ const next = parent.get(cur); parent.set(cur, r); cur = next; }
+    return r;
+  }
+  segs.forEach(([a,b])=>{
+    const ka = keyOf(a), kb = keyOf(b);
+    if(!parent.has(ka)) parent.set(ka, ka);
+    if(!parent.has(kb)) parent.set(kb, kb);
+    const ra = find(ka), rb = find(kb);
+    if(ra !== rb) parent.set(ra, rb);
+  });
+  const groups = new Map();
+  segs.forEach(seg => {
+    const root = find(keyOf(seg[0]));
+    (groups.get(root) || groups.set(root, []).get(root)).push(seg);
+  });
+  let best = [];
+  groups.forEach(list => { if(list.length > best.length) best = list; });
+  return best;
+}
+
+// v1.13.0 diagnosed the original bug correctly: the fill was ~21 separate per-county meshes, and
+// even though adjacent counties' shared border vertices match exactly at dissolve precision (that's
+// what lets the outline's edge-cancel trick work below), two *separately triangulated* meshes that
+// merely touch along a shared edge still leave a hairline antialiasing seam — each mesh's edge
+// coverage is sampled independently, and the sub-pixel coverage doesn't sum to fully opaque exactly
+// on the seam. Multiply by ~20 internal county-to-county borders and the seams trace the entire
+// county network — the grid-like tracery from the first screenshot, with water/grid showing through
+// along every county line.
+//
+// v1.13.0's fix, though, tried building a single fill mesh by walking the dissolved boundary
+// segments (orderSegmentsIntoRing, since removed) into one ordered ring — reusing the same outerSegs
+// the outline below computes, on the theory that one mesh can't have an internal seam. That holds
+// only if the dissolved boundary is a simple cycle. Real county topology isn't: tripoints where
+// three-plus counties meet at one vertex, and coastline pinches, leave branch points of degree >2 in
+// the surviving edge graph. The walk picked one branch arbitrarily and silently dropped whole
+// side-loops of segments from the fill, while the outline (which uses outerSegs directly, unordered)
+// still drew them — clean-edged bands of grid/water cutting through the tan land, confirmed against
+// a follow-up marked-up screenshot.
+//
+// v1.13.1 reverted to per-feature fill meshes (see bufferedPolygonFillMesh below) — each one a real,
+// always-valid simple polygon, no graph-walking involved — and fixed the original seam problem with
+// a small outward buffer per ring instead of a merge: buffer each ring outward from its own centroid
+// by a few world units before triangulating, so adjacent counties overlap slightly rather than
+// merely touching, reliably swallowing the antialiasing crack regardless of topology.
+
+
+// Confirmed by raycasting a screen pixel back into world space: the small floating-looking loop
+// survived largestConnectedComponent because it's technically graph-connected to the main coastline —
+// just at a single shared vertex (a bowtie/figure-eight), which Sutherland–Hodgman clipping can
+// produce when a concave ring crosses back over the same box edge near where it already crossed once.
+// That single shared point is thin enough at this scale to be visually invisible, so the small loop
+// reads as "floating in open water" even though one pixel technically ties it to the mainland. Split
+// any ring with a repeated vertex into its constituent simple loops here, before fill or outline ever
+// see it, and keep only the largest-area piece — same reasoning as largestConnectedComponent, just
+// operating one level earlier (on a single ring instead of the whole dissolved edge set).
+function ringArea(ring){
+  let area = 0;
+  const pts = ring.map(([lon,lat]) => project(lat, lon));
+  for(let i=0;i<pts.length-1;i++) area += pts[i].x*pts[i+1].z - pts[i+1].x*pts[i].z;
+  return Math.abs(area) / 2;
+}
+function splitSelfTouchingRing(ring){
+  const pts = ring.slice(0, ring.length-1); // drop the closing duplicate while scanning
+  const seen = new Map();
+  for(let i=0;i<pts.length;i++){
+    const key = Math.round(pts[i][0]*1e6) + ',' + Math.round(pts[i][1]*1e6);
+    if(seen.has(key)){
+      const j = seen.get(key);
+      const loop = pts.slice(j, i);
+      const remainder = pts.slice(0, j).concat(pts.slice(i));
+      const close = arr => arr.length ? arr.concat([arr[0]]) : arr;
+      return [close(loop), ...splitSelfTouchingRing(close(remainder))].filter(r => r.length >= 4);
+    }
+    seen.set(key, i);
+  }
+  return [ring];
+}
+function mainRingOf(ring){
+  const pieces = splitSelfTouchingRing(ring);
+  if(pieces.length === 1) return pieces[0];
+  return pieces.reduce((a, b) => ringArea(b) > ringArea(a) ? b : a);
+}
+
 function buildContextGeometry(features, nameFn){
   // Clip every feature's geometry to the local box up front, so the outline pass, fill pass, and
   // centroid/label calculation all agree on the same (proportionate) shape.
-  const clipped = features
+  const clippedRaw = features
     .map(f => ({ name: nameFn(f), geom: clipGeometryToBox(f.geometry, CONTEXT_CLIP_BOX) }))
     .filter(f => f.geom);
+  if(!clippedRaw.length) return;
+
+  // v1.13.3: mainRingOf (below) picks only the single largest piece after a self-touch split — the
+  // right call for the outline and centroid (a clean coastline trace, one label position), but wrong
+  // for the fill: any smaller split piece it discards was still real, sizeable clipped land, and
+  // discarding it just leaves a hole in ground coverage there — water/grid showing through as a small
+  // isolated mark with no relationship to any real coastline, confirmed against a follow-up
+  // marked-up screenshot showing exactly that (small stray dots/dashes scattered across NJ's
+  // interior, unrelated to county borders or the coastline). Fix: keep clippedRaw (pre-split) around
+  // so the fill loop below can render *every* real split piece as its own mesh, while outline/
+  // centroid continue to use the reduced single-ring version — same clip source, two different
+  // reduction rules for two different jobs.
+  const clipped = clippedRaw
+    .map(({name, geom}) => {
+      if(geom.type === 'Polygon'){
+        return { name, geom: {type:'Polygon', coordinates: [mainRingOf(geom.coordinates[0]), ...geom.coordinates.slice(1)]} };
+      }
+      if(geom.type === 'MultiPolygon'){
+        return { name, geom: {type:'MultiPolygon', coordinates: geom.coordinates.map(rs => [mainRingOf(rs[0]), ...rs.slice(1)])} };
+      }
+      return { name, geom };
+    });
   if(!clipped.length) return;
 
-  const positions = [];
+  const allRings = [];
   const centroids = {};
   clipped.forEach(({name, geom})=>{
-    if(geom.type === 'Polygon'){
-      geom.coordinates.forEach(ring => addRing(ring, name, positions, centroids));
-    } else if(geom.type === 'MultiPolygon'){
-      geom.coordinates.forEach(poly => poly.forEach(ring => addRing(ring, name, positions, centroids)));
-    }
+    const ringSets = geom.type === 'Polygon' ? [geom.coordinates] : geom.coordinates;
+    ringSets.forEach(ringSet => ringSet.forEach(ring => {
+      allRings.push(ring);
+      const c = centroids[name] || (centroids[name] = {x:0, z:0, n:0});
+      ring.forEach(([lon,lat])=>{
+        const p = project(lat, lon);
+        c.x += p.x; c.z += p.z; c.n++;
+      });
+    }));
   });
-  if(!positions.length) return;
+  if(!allRings.length) return;
 
-  // Subtle fill first, so context land reads as land at a glance rather than needing the viewer to
-  // trace a thin dashed line — still clearly secondary to NYC's much higher-opacity primary land fill.
-  clipped.forEach(({geom})=>{
+  // Dissolve once, reused below for the outline.
+  const outerSegsRaw = outerBoundarySegments(allRings);
+  const outerSegs = largestConnectedComponent(outerSegsRaw);
+  // v1.14.1: the set of true coastline edges (appear exactly once — see outerBoundarySegments), used
+  // below so the fill's seam-hiding buffer can skip real coastline vertices entirely instead of
+  // pushing the whole ring outward uniformly (see bufferedPolygonFillMesh).
+  const exteriorSegKeySet = new Set(outerSegsRaw.map(([a,b]) => segKey(a,b)));
+
+  // v1.13.1: v1.13.0's single-mesh fill (walking outerSegs into one ordered ring) assumed the
+  // dissolved boundary was always a simple cycle. Real county topology isn't: tripoints where three+
+  // counties meet at one vertex, and coastline pinches, leave branch points of degree >2 in the
+  // surviving edge graph. orderSegmentsIntoRing's walk picks one branch arbitrarily and can leave a
+  // whole side-loop's segments unused — those segments still got drawn by the outline below (which
+  // uses outerSegs directly, unordered), but the fill silently lost that whole region, showing as
+  // clean-edged bands of grid/water cutting through the tan land — confirmed directly against a
+  // second marked-up screenshot after v1.13.0 shipped. Reverted to per-feature fill meshes (each one
+  // a real, always-valid simple polygon — no graph-walking involved), and fixed the original seam
+  // problem a different way: buffer each ring outward from its own centroid by a small fixed
+  // world-space epsilon before triangulating, so adjacent counties overlap slightly instead of
+  // merely touching edge-to-edge. A few world units of overlap (invisible at WORLD_SIZE=1200 scale)
+  // reliably swallows the WebGL antialiasing crack that a bare shared edge leaves between two
+  // independently-triangulated meshes, without depending on exact topology.
+  const FILL_BUFFER_EPS = 3;
+  // v1.14.1: the original version pushed every ring vertex outward uniformly, including true
+  // coastline vertices — which is exactly what created a visible gap between this fill's edge and
+  // the outline stroke (built from the unbuffered outerSegs) once zoomed in close enough to resolve
+  // a few world units, reading as a ghosted double line along the coast. Fix: a vertex is only pushed
+  // outward if at least one of its two adjacent edges is an internal (shared-with-neighbor) seam —
+  // real coastline vertices (both adjacent edges exterior, per exteriorSegKeySet) are left exactly
+  // where they are, so the fill's edge and the outline coincide along the actual coast. Only the
+  // handful of vertices right at a county-seam-meets-coast corner still get nudged, which reads as a
+  // single negligible kink rather than a whole parallel line.
+  function bufferedXZ(ring, eps, exteriorKeySet){
+    const n = ring.length;
+    const pts = ring.map(([lon,lat]) => { const p = project(lat, lon); return {x:p.x, z:p.z}; });
+    let cx = 0, cz = 0;
+    pts.forEach(p => { cx += p.x; cz += p.z; });
+    cx /= pts.length; cz /= pts.length;
+    const edgeExterior = new Array(Math.max(0, n-1));
+    for(let k=0;k<n-1;k++){
+      edgeExterior[k] = !!exteriorKeySet && exteriorKeySet.has(segKey(ring[k], ring[k+1]));
+    }
+    return pts.map((p, i) => {
+      if(exteriorKeySet && n > 1){
+        const prevEdgeIdx = i === 0 ? n-2 : i-1;
+        const nextEdgeIdx = i === n-1 ? 0 : i;
+        if(edgeExterior[prevEdgeIdx] && edgeExterior[nextEdgeIdx]) return new THREE.Vector2(p.x, p.z);
+      }
+      const dx = p.x - cx, dz = p.z - cz, len = Math.hypot(dx, dz) || 1;
+      return new THREE.Vector2(p.x + (dx / len) * eps, p.z + (dz / len) * eps);
+    });
+  }
+  function bufferedPolygonFillMesh(ringSet, material, eps, exteriorKeySet){
+    const shape = new THREE.Shape(bufferedXZ(ringSet[0], eps, exteriorKeySet));
+    for(let h = 1; h < ringSet.length; h++){
+      shape.holes.push(new THREE.Path(bufferedXZ(ringSet[h], eps, exteriorKeySet)));
+    }
+    const geo = new THREE.ShapeGeometry(shape);
+    geo.rotateX(Math.PI / 2);
+    geo.translate(0, 0.05, 0);
+    return new THREE.Mesh(geo, material);
+  }
+  const MIN_FILL_PIECE_AREA = 2; // world units² — drops only true zero/near-zero clip-precision noise, not real land
+  function fillPiecesOf(ring){
+    return splitSelfTouchingRing(ring).filter(r => ringArea(r) >= MIN_FILL_PIECE_AREA);
+  }
+  clippedRaw.forEach(({geom})=>{
     if(geom.type === 'Polygon'){
-      const mesh = polygonFillMesh(geom.coordinates, contextFillMat);
-      mesh.userData.sharedMaterial = true;
-      mesh.renderOrder = 2;
-      scene.add(mesh);
-    } else if(geom.type === 'MultiPolygon'){
-      geom.coordinates.forEach(ringSet=>{
-        const mesh = polygonFillMesh(ringSet, contextFillMat);
+      fillPiecesOf(geom.coordinates[0]).forEach(piece=>{
+        const mesh = bufferedPolygonFillMesh([piece, ...geom.coordinates.slice(1)], contextFillMat, FILL_BUFFER_EPS, exteriorSegKeySet);
         mesh.userData.sharedMaterial = true;
         mesh.renderOrder = 2;
         scene.add(mesh);
       });
+    } else if(geom.type === 'MultiPolygon'){
+      geom.coordinates.forEach(ringSet=>{
+        fillPiecesOf(ringSet[0]).forEach(piece=>{
+          const mesh = bufferedPolygonFillMesh([piece, ...ringSet.slice(1)], contextFillMat, FILL_BUFFER_EPS, exteriorSegKeySet);
+          mesh.userData.sharedMaterial = true;
+          mesh.renderOrder = 2;
+          scene.add(mesh);
+        });
+      });
     }
   });
 
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  const mat = new THREE.LineDashedMaterial({color:0xD6C9A9, dashSize:9, gapSize:5, transparent:true, opacity:0.7});
-  const lines = new THREE.LineSegments(geo, mat);
-  lines.computeLineDistances(); // required by LineDashedMaterial
-  lines.renderOrder = 3;
-  scene.add(lines);
+  if(outerSegs.length){
+    const positions = [];
+    outerSegs.forEach(([a,b])=>{
+      const pa = project(a[1], a[0]), pb = project(b[1], b[0]);
+      positions.push(pa.x, 0.6, pa.z, pb.x, 0.6, pb.z);
+    });
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    // Solid, matching NYC's own borough outline style (lineMat in buildBoundaryGeometry) — no longer
+    // dashed, since a dashed line was this feature's visual cue for "this is separate/approximate"
+    // context, but it's now built from the same accurate source as the fill, so it earns the same
+    // treatment as a real coastline.
+    // v1.13.2: depthWrite:false added — same missing-flag bug just fixed on the grid material above,
+    // caught here proactively before it caused its own z-fighting flicker against whatever draws
+    // after this layer.
+    const mat = new THREE.LineBasicMaterial({color:0xD6C9A9, transparent:true, opacity:0.6, depthWrite:false, fog:false});
+    const lines = new THREE.LineSegments(geo, mat);
+    lines.renderOrder = 3;
+    scene.add(lines);
+  }
 
   contextLabels.push(...Object.entries(centroids).map(([name, c]) => ({
     name: name.toUpperCase(), pos: new THREE.Vector3(c.x / c.n, 40, c.z / c.n)
@@ -942,8 +1693,11 @@ function buildBoundaryGeometry(features){
 
   const positions = [];
   const centroids = {};
+  // v1.12.0: 0.94 → 1.0. At 0.94 the water color was still faintly visible through NYC's own land
+  // fill at certain angles/blend states; since this is the primary "this is solid ground" layer,
+  // there's no reason for any water to show through it at all.
   const fillMat = new THREE.MeshBasicMaterial({
-    color: 0x3A3323, transparent: true, opacity: 0.94, side: THREE.DoubleSide, depthWrite: false
+    color: 0x3A3323, transparent: true, opacity: 1.0, side: THREE.DoubleSide, depthWrite: false, fog: false
   });
 
   function addFeaturePolygons(coordinates, isMulti){
@@ -981,7 +1735,9 @@ function buildBoundaryGeometry(features){
 
   const lineGeo = new THREE.BufferGeometry();
   lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  const lineMat = new THREE.LineBasicMaterial({color:0xD6C9A9, transparent:true, opacity:0.6});
+  // v1.13.2: depthWrite:false added — same missing-flag bug just fixed on the grid material (see
+  // initScene above) and the context outline material (see buildContextGeometry above).
+  const lineMat = new THREE.LineBasicMaterial({color:0xD6C9A9, transparent:true, opacity:0.6, depthWrite:false, fog:false});
   const outlineLines = new THREE.LineSegments(lineGeo, lineMat);
   outlineLines.renderOrder = 3;
   boundaryGroup.add(outlineLines);
@@ -991,6 +1747,30 @@ function buildBoundaryGeometry(features){
     name, pos: new THREE.Vector3(c.x / c.n, 55, c.z / c.n)
   }));
   buildLabelEls();
+  syncDefaultTargetToBoroughs();
+}
+
+// v1.15.1: direct feedback — Recenter wasn't actually centering NYC in frame. Root cause: DEFAULT_TARGET
+// was hardcoded to world origin (0,40,0), which is the center of the *padded* projection box (LAT_MIN/
+// MAX/LON_MIN/MAX — extended north into the Hudson Valley and west into NJ for context, per the v1.9.0
+// note above project()). That padding was added asymmetrically — extended on the north/west sides only,
+// while the south/east edges stayed at NYC's real bounds — so NYC's own footprint sits in the south-east
+// portion of the box, not centered in it. World origin was never NYC's centroid; it just happened to be
+// close enough not to notice at the zoom levels used before the context expansion. Fixed by computing
+// the actual centroid from boroughLabels (real geometry-derived positions, not a guessed lat/lon) once
+// boundary data loads, and correcting DEFAULT_TARGET to match — camTarget follows along too, but only
+// if it's still sitting at the untouched default (so this never clobbers a pan the person already made
+// while boundary data was loading).
+function syncDefaultTargetToBoroughs(){
+  if(!boroughLabels.length) return;
+  const cx = boroughLabels.reduce((sum,b) => sum + b.pos.x, 0) / boroughLabels.length;
+  const cz = boroughLabels.reduce((sum,b) => sum + b.pos.z, 0) / boroughLabels.length;
+  const wasAtOldDefault = camTarget.distanceTo(DEFAULT_TARGET) < 0.01;
+  DEFAULT_TARGET.set(cx, 40, cz);
+  if(wasAtOldDefault){
+    camTarget.copy(DEFAULT_TARGET);
+    updateCamera();
+  }
 }
 
 /* HTML label layer — cheaper and crisper than 3D sprite text at this scale. */
@@ -1053,7 +1833,7 @@ function renderScaleBar(){
 
 /* ================= Three.js scene ================= */
 let renderer, scene, camera;
-let forestLines = null, forestPoints = null, groundGrid = null;
+let forestLines = null, forestPoints = null, forestPointsFar = null;
 // North-up (theta=90° puts the camera south of the target looking north — east right, north up,
 // the conventional map reading). Two named presets: a near-top-down "Plan" view and an oblique "3D"
 // view; Recenter snaps back to whichever is currently active, including undoing any pan.
@@ -1105,32 +1885,115 @@ function getDotTexture(){
   return dotTextureCache;
 }
 
+// v1.14.0: the soft dot above is right for close-in viewing, but at the distances where canopy
+// points alone carry the whole "forest" read (see BRANCH_VISIBLE_MAX_DIST), thousands of long-feather
+// translucent sprites with no depth sorting blend into each other into a hazy, indistinct mass —
+// the "muddy" complaint. This crisp variant has a much larger solid core and a short, hard falloff,
+// paired with alphaTest in the far-LOD material so fragments below the cutoff are discarded outright
+// instead of blended — each dot reads as a small flat colored disc rather than a soft translucent
+// smudge, so overlapping canopies stay legible instead of washing into one color.
+function makeCrispDotTexture(){
+  const size = 64;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+  g.addColorStop(0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.78, 'rgba(255,255,255,1)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(c);
+}
+let crispDotTextureCache = null;
+function getCrispDotTexture(){
+  if(!crispDotTextureCache) crispDotTextureCache = makeCrispDotTexture();
+  return crispDotTextureCache;
+}
+
+// v1.14.2: direct feedback — replace the flat black sky with a sunset gradient. This is a static,
+// screen-space CanvasTexture (not an equirectangular sky sphere), so it doesn't rotate with the
+// camera — a deliberate simplification consistent with the rest of the scene's lightweight,
+// stylized approach (no extra geometry/draw calls for a sky dome). It reads --sky-top/--sky-mid/
+// --sky-horizon so both themes get their own palette, same pattern as getComputedColor elsewhere.
+let skyTextureCache = null;
+function makeSkyTexture(){
+  const w = 8, h = 512; // 1px wide is enough for a vertical gradient stretched to fill the canvas
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, getComputedColor('--sky-top'));
+  g.addColorStop(0.55, getComputedColor('--sky-mid'));
+  g.addColorStop(1, getComputedColor('--sky-horizon'));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  const tex = new THREE.CanvasTexture(c);
+  return tex;
+}
+function applySkyBackground(){
+  if(skyTextureCache) skyTextureCache.dispose();
+  skyTextureCache = makeSkyTexture();
+  if(scene) scene.background = skyTextureCache;
+  // Fog color matches the horizon stop, not the old flat canvas-bg — that's the band of the gradient
+  // that sits behind the water plane's edge and the far context land, so fogged-out geometry now
+  // fades into the warm horizon glow instead of the sky's darker upper reaches.
+  if(scene && scene.fog) scene.fog.color = new THREE.Color(getComputedColor('--sky-horizon'));
+}
+
 function initScene(){
   const canvas = document.getElementById('viewport');
   renderer = new THREE.WebGLRenderer({canvas, antialias:true, alpha:false});
   renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(getComputedColor('--canvas-bg'));
+  // v1.14.1 added fog here to hide the water plane's own finite edge. v1.14.4 fixed that edge problem
+  // structurally instead (enlarged the plane past the camera's far-clip distance, so the edge is now
+  // literally unreachable) — which made this fog redundant for its original job. v1.14.5: direct
+  // feedback against a screenshot showed fog was still doing something, just not something wanted —
+  // fading real, visible water (a river channel, mapped harbor) toward the sky color as it receded
+  // into the distance, same "bleeding past the horizon" complaint v1.14.3 fixed for land. Every
+  // material in the scene now explicitly opts out of fog (see fog:false below and on fillMat/
+  // contextFillMat/both outline mats/the grid/branchMat/both canopy point sets) — scene.fog itself is
+  // left in place (harmless, zero-cost when unreferenced) rather than torn out, in case a future
+  // change wants distance haze again, but nothing currently uses it.
+  scene.fog = new THREE.Fog(getComputedColor('--sky-horizon'), 1, 1);
+  applySkyBackground();
   camera = new THREE.PerspectiveCamera(42, 1, 1, 4000);
   updateCamera();
 
   // Water base — sits beneath the grid and the (near-opaque) land fill, so it only shows through
   // in the gaps between borough/state shapes: rivers, the harbor, the ocean.
-  const waterGeo = new THREE.PlaneGeometry(WORLD_SIZE * 1.6, WORLD_SIZE * 1.6);
+  // v1.14.4: direct feedback against a screenshot at a wide, low-angle view — the water plane's own
+  // finite edge was visible again, poking up above the land as a hard-edged wedge against the sky.
+  // Root cause wasn't the fog tuning (that part was working) — it's that the plane's half-width
+  // (960, at the old 1.6 multiplier) was smaller than camDist's own max (2200, see the pinch/wheel
+  // zoom clamps below), meaning the camera could orbit to a distance *beyond the plane's own edge*.
+  // No fog range can hide a boundary the camera can get that close to or past. Fixed at the geometry
+  // level instead of by re-tuning fog again: the plane is now far larger than the camera's far-clip
+  // distance (4000, see the PerspectiveCamera call below), so its edge is structurally unreachable —
+  // clipped by the camera's own far plane first, at any camDist/angle this orbit control allows.
+  const waterGeo = new THREE.PlaneGeometry(WORLD_SIZE * 10, WORLD_SIZE * 10);
   waterGeo.rotateX(-Math.PI / 2);
-  const waterMat = new THREE.MeshBasicMaterial({map: makeWaterTexture(), depthWrite: false});
+  // v1.14.5: fog:false — see the scene.fog comment above; real river/harbor water was fading toward
+  // the sky color at a distance, which reads as the sunset bleeding into water, not as a hidden edge.
+  const waterMat = new THREE.MeshBasicMaterial({map: makeWaterTexture(), depthWrite: false, fog: false});
   const water = new THREE.Mesh(waterGeo, waterMat);
   water.renderOrder = 0;
   water.position.y = -0.5;
   scene.add(water);
 
-  const grid = new THREE.GridHelper(WORLD_SIZE, 30, 0x2A2519, 0x1C1811);
-  grid.material.transparent = true;
-  grid.material.opacity = 0.22;
-  grid.position.y = 0;
-  grid.renderOrder = 1;
-  scene.add(grid);
-  groundGrid = grid;
+  // v1.15.5: GridHelper retired entirely. Direct feedback flagged a patchy grid visible mid-water —
+  // root cause: this grid was sized to the original WORLD_SIZE (1200) footprint and never got
+  // widened in the v1.14.4 pass that enlarged the water plane to WORLD_SIZE*10 so its edge would sit
+  // past the camera's reachable range (see the water plane comment above). That left an orphaned
+  // WORLD_SIZE-sized grid patch floating with a hard, visible edge inside the much larger borderless
+  // water plane — a real geometry bug, not just an opacity/z-fighting one (those were fixed in
+  // v1.13.2/v1.14.3, see the historical notes below, but neither touched the grid's actual extent).
+  // Rather than re-scale it to match, removed it outright: it dates back to v1.1.0, before the water
+  // plane had its own gradient texture or the sky had a rendered gradient — at that point a bare
+  // point-cloud on flat black genuinely needed a scale/orientation reference. Now that water, sky,
+  // and full geographic context all render, the grid is vestigial and its only remaining visible
+  // effect was this artifact.
 
   resizeRenderer();
   window.addEventListener('resize', resizeRenderer);
@@ -1154,6 +2017,15 @@ function resizeRenderer(){
 const BRANCH_VISIBLE_MAX_DIST = 480;
 function updateBranchVisibility(){
   if(forestLines) forestLines.visible = camDist < BRANCH_VISIBLE_MAX_DIST;
+  updateCanopyLOD();
+}
+// v1.14.0: canopy points swap between the full soft-dot set (close in, same threshold branches use)
+// and the decimated crisp-dot set (everywhere else) — called from inside updateBranchVisibility so
+// every existing call site picks this up for free without needing its own wiring.
+function updateCanopyLOD(){
+  const near = camDist < BRANCH_VISIBLE_MAX_DIST;
+  if(forestPoints) forestPoints.visible = near;
+  if(forestPointsFar) forestPointsFar.visible = !near;
 }
 function updateCamera(){
   const x = camTarget.x + camDist * Math.sin(camPhi) * Math.cos(camTheta);
@@ -1163,6 +2035,16 @@ function updateCamera(){
   camera.lookAt(camTarget);
   camera.updateMatrixWorld();
   updateBranchVisibility();
+  updateFog();
+}
+// v1.14.1: THREE.Fog's near/far are camera-distance-based, not world-position-based, so scaling them
+// with camDist (rather than using fixed world-unit values) keeps the water plane's edge fading
+// smoothly into the background at every zoom level — zoomed in close, fog starts and ends well past
+// any mapped content; zoomed out, it scales up right along with the wider view.
+function updateFog(){
+  if(!scene || !scene.fog) return;
+  scene.fog.near = camDist * 1.4;
+  scene.fog.far = camDist * 2.6;
 }
 function setViewMode(mode){
   viewMode = mode;
@@ -1267,9 +2149,14 @@ function attachOrbitControls(el){
 
   /* Click-to-inspect: raycast against the canopy points (not the branch mesh — points map 1:1 back
      to a real record via pointRecordRefs, branches don't). Threshold scales with camDist so picking
-     stays forgiving whether zoomed in or out. */
+     stays forgiving whether zoomed in or out. v1.14.0: two point sets now exist (full-detail near,
+     decimated crisp far — see updateCanopyLOD), so tap against whichever one is actually visible,
+     using its own index-aligned record-ref array. */
   function handleCanvasTap(clientX, clientY){
-    if(!forestPoints || !pointRecordRefs.length) return;
+    const usingFar = forestPointsFar && forestPointsFar.visible;
+    const targetMesh = usingFar ? forestPointsFar : forestPoints;
+    const targetRefs = usingFar ? pointRecordRefsFar : pointRecordRefs;
+    if(!targetMesh || !targetRefs.length) return;
     const rect = el.getBoundingClientRect();
     const ndc = new THREE.Vector2(
       ((clientX - rect.left) / rect.width) * 2 - 1,
@@ -1278,9 +2165,11 @@ function attachOrbitControls(el){
     const raycaster = new THREE.Raycaster();
     raycaster.params.Points.threshold = Math.max(2, camDist * 0.012);
     raycaster.setFromCamera(ndc, camera);
-    const hits = raycaster.intersectObject(forestPoints);
+    const hits = usingFar
+      ? raycaster.intersectObject(forestPointsFar)
+      : raycaster.intersectObject(forestPoints);
     if(hits.length){
-      const rec = pointRecordRefs[hits[0].index];
+      const rec = targetRefs[hits[0].index];
       if(rec) showTreeInfo(rec, clientX, clientY);
     } else {
       hideTreeInfo();
@@ -1319,20 +2208,74 @@ function animate(){
 /* ================= Build forest geometry from current records ================= */
 let currentRecords = [];
 let colorMode = 'health';
+let selectedSeason = 'summer'; // v1.15.0: only meaningful when colorMode === 'season' — see SEASON_PALETTES
 let pointRecordRefs = []; // index-aligned with forestPoints' vertices, for click-to-inspect
+let pointRecordRefsFar = []; // index-aligned with forestPointsFar's vertices (v1.14.0 LOD set)
+
+// v1.14.0: legend swatches double as visibility toggles. Tracked per color-mode so switching between
+// Health/Species doesn't clobber whichever filter you'd set up in the other mode. Species keys are
+// either a real top-N species name or the literal '__other__' bucket (matches the legend's "N more
+// species" swatch, same convention topSpeciesSet/OTHER_SPECIES_COLOR already use elsewhere).
+const hiddenHealth = new Set();
+const hiddenSpecies = new Set();
+function healthKey(rec){
+  return ['Good','Fair','Poor','Unknown'].includes(rec.health) ? rec.health : 'Unknown';
+}
+function categoryKey(rec, topSet){
+  return colorMode === 'health'
+    ? healthKey(rec)
+    : ((topSet && topSet.has(rec.species)) ? rec.species : '__other__');
+}
+function isCategoryHidden(rec, topSet){
+  if(colorMode === 'season') return false; // season is a display style, not a per-tree category — nothing to hide by
+  const key = categoryKey(rec, topSet);
+  return colorMode === 'health' ? hiddenHealth.has(key) : hiddenSpecies.has(key);
+}
+
+// v1.15.0: trunk-size (DBH) filter — orthogonal to colorMode (works the same whether you're coloring
+// by health, species, or season), so it's tracked in its own set rather than folded into
+// hiddenHealth/hiddenSpecies. Bucket cutoffs follow the size classes NYC's own street tree census
+// documentation uses (young/semi-mature/mature).
+const SIZE_CLASSES = [
+  ['young', 'Young', d => d <= 6],
+  ['semi', 'Semi-mature', d => d > 6 && d <= 18],
+  ['mature', 'Mature', d => d > 18]
+];
+const hiddenSizeClass = new Set();
+function sizeClassOf(rec){
+  const d = rec.dbh || 0;
+  const found = SIZE_CLASSES.find(([, , test]) => test(d));
+  return found ? found[0] : 'mature';
+}
+function isSizeHidden(rec){
+  return hiddenSizeClass.has(sizeClassOf(rec));
+}
+
+// v1.14.0: 1-in-N decimation of the full canopy point set for the far-zoom LOD mesh — see
+// updateCanopyLOD and the crisp dot texture above. Dot size is bumped to compensate so the thinned
+// set still reads as full coverage, just without the overdraw that was causing the haze.
+const CANOPY_FAR_STRIDE = 3;
+const CANOPY_FAR_SIZE_MULT = 1.6;
 
 function rebuildForest(records){
   hideTreeInfo();
   if(forestLines){ scene.remove(forestLines); forestLines.geometry.dispose(); forestLines.material.dispose(); }
   if(forestPoints){ scene.remove(forestPoints); forestPoints.geometry.dispose(); forestPoints.material.dispose(); }
+  if(forestPointsFar){ scene.remove(forestPointsFar); forestPointsFar.geometry.dispose(); forestPointsFar.material.dispose(); }
+
+  // topSpeciesSet is always computed from the FULL unfiltered sample, so a hidden species' category
+  // membership (and the legend's percentages) never shifts just because it's toggled off.
+  const topSet = colorMode === 'species' ? topSpeciesSet(records) : null;
+  const visibleRecords = records.filter(rec => !isCategoryHidden(rec, topSet) && !isSizeHidden(rec));
 
   const out = {
     branchPos:[], branchCol:[], branchIdx:[],
     pointPos:[], pointCol:[], pointSize:[], pointRecordRef:[],
     colorMode,
-    topSpeciesSet: colorMode === 'species' ? topSpeciesSet(records) : null
+    topSpeciesSet: topSet,
+    season: selectedSeason
   };
-  records.forEach(rec=>{
+  visibleRecords.forEach(rec=>{
     const p = project(rec.lat, rec.lon);
     growTree({...rec, x:p.x, z:p.z}, out);
   });
@@ -1341,7 +2284,7 @@ function rebuildForest(records){
   branchGeo.setAttribute('position', new THREE.Float32BufferAttribute(out.branchPos, 3));
   branchGeo.setAttribute('color', new THREE.Float32BufferAttribute(out.branchCol, 3));
   branchGeo.setIndex(new THREE.Uint32BufferAttribute(out.branchIdx, 1));
-  const branchMat = new THREE.MeshBasicMaterial({vertexColors:true, side:THREE.DoubleSide, transparent:true, opacity:0.68});
+  const branchMat = new THREE.MeshBasicMaterial({vertexColors:true, side:THREE.DoubleSide, transparent:true, opacity:0.68, fog:false});
   forestLines = new THREE.Mesh(branchGeo, branchMat);
   forestLines.renderOrder = 4;
   scene.add(forestLines);
@@ -1352,14 +2295,40 @@ function rebuildForest(records){
   ptGeo.setAttribute('color', new THREE.Float32BufferAttribute(out.pointCol, 3));
   const ptMat = new THREE.PointsMaterial({
     size:5.2, map:getDotTexture(), vertexColors:true, sizeAttenuation:true,
-    transparent:true, opacity:0.95, depthWrite:false
+    transparent:true, opacity:0.95, depthWrite:false, fog:false
   });
   forestPoints = new THREE.Points(ptGeo, ptMat);
   forestPoints.renderOrder = 5;
   scene.add(forestPoints);
   pointRecordRefs = out.pointRecordRef;
 
-  document.getElementById('statLine').innerHTML = `<b>${records.length.toLocaleString()}</b> trees loaded`;
+  // v1.14.0: decimated crisp far-LOD set — see the CANOPY_FAR_STRIDE comment above.
+  const farPos = [], farCol = [], farSize = [], farRefs = [];
+  const pointCount = out.pointSize.length;
+  for(let i=0;i<pointCount;i++){
+    if(i % CANOPY_FAR_STRIDE === 0){
+      farPos.push(out.pointPos[i*3], out.pointPos[i*3+1], out.pointPos[i*3+2]);
+      farCol.push(out.pointCol[i*3], out.pointCol[i*3+1], out.pointCol[i*3+2]);
+      farSize.push(out.pointSize[i] * CANOPY_FAR_SIZE_MULT);
+      farRefs.push(out.pointRecordRef[i]);
+    }
+  }
+  const ptGeoFar = new THREE.BufferGeometry();
+  ptGeoFar.setAttribute('position', new THREE.Float32BufferAttribute(farPos, 3));
+  ptGeoFar.setAttribute('color', new THREE.Float32BufferAttribute(farCol, 3));
+  const ptMatFar = new THREE.PointsMaterial({
+    size:8.5, map:getCrispDotTexture(), vertexColors:true, sizeAttenuation:true,
+    transparent:true, opacity:1.0, alphaTest:0.45, depthWrite:true, fog:false
+  });
+  forestPointsFar = new THREE.Points(ptGeoFar, ptMatFar);
+  forestPointsFar.renderOrder = 5;
+  scene.add(forestPointsFar);
+  pointRecordRefsFar = farRefs;
+  updateCanopyLOD();
+
+  document.getElementById('statLine').innerHTML = visibleRecords.length < records.length
+    ? `<b>${visibleRecords.length.toLocaleString()}</b> of <b>${records.length.toLocaleString()}</b> trees shown`
+    : `<b>${records.length.toLocaleString()}</b> trees loaded`;
   renderLegend();
 }
 
@@ -1380,7 +2349,8 @@ function renderColorModeRow(){
   const row = document.getElementById('colorModeRow');
   const modes = [
     ['health','Health','Color canopy by tree health (Good/Fair/Poor/Unknown)'],
-    ['species','Species','Top species by count get distinct colors; everything else is one neutral tone — see legend below']
+    ['species','Species','Top species by count get distinct colors; everything else is one neutral tone — see legend below'],
+    ['season','Season','Purely a display style, not real data — canopy recolored by time of year']
   ];
   row.innerHTML = modes.map(([v,label,title])=>
     `<button class="btn secondary${v===colorMode?' active':''}" data-mode="${v}" title="${escapeAttr(title)}">${label}</button>`
@@ -1389,6 +2359,21 @@ function renderColorModeRow(){
     btn.addEventListener('click', ()=>{
       colorMode = btn.dataset.mode;
       renderColorModeRow();
+      if(currentRecords.length) rebuildForest(currentRecords);
+    });
+  });
+}
+function renderSizeRow(){
+  const row = document.getElementById('sizeRow');
+  row.innerHTML = SIZE_CLASSES.map(([key,label])=>{
+    const off = hiddenSizeClass.has(key);
+    return `<button class="btn secondary${off?'':' active'}" data-size="${key}" title="Click to ${off?'show':'hide'} ${escapeAttr(label)} trees (by trunk diameter)">${label}</button>`;
+  }).join('');
+  row.querySelectorAll('button').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const key = btn.dataset.size;
+      if(hiddenSizeClass.has(key)) hiddenSizeClass.delete(key); else hiddenSizeClass.add(key);
+      renderSizeRow();
       if(currentRecords.length) rebuildForest(currentRecords);
     });
   });
@@ -1417,6 +2402,8 @@ function renderLegend(){
     return;
   }
 
+  // v1.14.0: percentages/counts always come from currentRecords (the full unfiltered sample) —
+  // toggling a category off hides it from the scene but never re-tallies the legend under it.
   if(colorMode === 'health'){
     const order = ['Good','Fair','Poor','Unknown'];
     const counts = {Good:0, Fair:0, Poor:0, Unknown:0};
@@ -1425,7 +2412,21 @@ function renderLegend(){
     legend.innerHTML = order.map(label=>{
       const n = counts[label];
       const pct = total ? Math.round((n / total) * 100) : 0;
-      return `<span><span class="sw" style="background:${swatchHex[label]}"></span>${label} — ${pct}% (${n.toLocaleString()})</span>`;
+      const off = hiddenHealth.has(label);
+      return `<button type="button" class="item${off?' off':''}" data-cat-mode="health" data-cat-key="${escapeAttr(label)}" title="Click to ${off?'show':'hide'} ${escapeAttr(label)}-health trees"><span class="sw" style="background:${swatchHex[label]}"></span>${label} — ${pct}% (${n.toLocaleString()})</button>`;
+    }).join('') + resetFiltersMarkup(hiddenHealth.size > 0);
+  } else if(colorMode === 'season'){
+    // v1.15.0: season has no per-tree category to tally or hide — it's a display style (see
+    // SEASON_PALETTES), so the legend becomes a single-select picker instead of toggleable swatches.
+    const seasons = [
+      ['spring','Spring',SEASON_PALETTES.spring[2]],
+      ['summer','Summer',SEASON_PALETTES.summer[0]],
+      ['fall','Fall',SEASON_PALETTES.fall[1]],
+      ['winter','Winter',SEASON_PALETTES.winter[0]]
+    ];
+    legend.innerHTML = seasons.map(([key,label,hex])=>{
+      const active = selectedSeason === key;
+      return `<button type="button" class="item season-item${active?' active':''}" data-season="${key}" title="Recolor the canopy for ${label} (display only — not real data)"><span class="sw" style="background:#${hex.toString(16).padStart(6,'0')}"></span>${label}</button>`;
     }).join('');
   } else {
     // Same tally + same TOP_SPECIES_N + same OTHER_SPECIES_HEX used to color the actual canopy —
@@ -1438,13 +2439,38 @@ function renderLegend(){
       const c = speciesColor(species);
       const hex = '#' + c.getHexString();
       const pct = Math.round((n / total) * 100);
-      return `<span><span class="sw" style="background:${hex}"></span>${escapeHtml(species)} — ${pct}% (${n.toLocaleString()})</span>`;
+      const off = hiddenSpecies.has(species);
+      return `<button type="button" class="item${off?' off':''}" data-cat-mode="species" data-cat-key="${escapeAttr(species)}" title="Click to ${off?'show':'hide'} ${escapeAttr(species)}"><span class="sw" style="background:${hex}"></span>${escapeHtml(species)} — ${pct}% (${n.toLocaleString()})</button>`;
     }).join('');
+    const offOther = hiddenSpecies.has('__other__');
     const otherSpan = otherCount
-      ? `<span><span class="sw" style="background:${OTHER_SPECIES_HEX}"></span>${sorted.length - TOP_SPECIES_N} more species — ${Math.round((otherCount/total)*100)}% (${otherCount.toLocaleString()})</span>`
+      ? `<button type="button" class="item${offOther?' off':''}" data-cat-mode="species" data-cat-key="__other__" title="Click to ${offOther?'show':'hide'} all other species"><span class="sw" style="background:${OTHER_SPECIES_HEX}"></span>${sorted.length - TOP_SPECIES_N} more species — ${Math.round((otherCount/total)*100)}% (${otherCount.toLocaleString()})</button>`
       : '';
-    legend.innerHTML = swatches + otherSpan;
+    legend.innerHTML = swatches + otherSpan + resetFiltersMarkup(hiddenSpecies.size > 0);
   }
+
+  legend.querySelectorAll('button.item[data-cat-mode]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const set = btn.dataset.catMode === 'health' ? hiddenHealth : hiddenSpecies;
+      const key = btn.dataset.catKey;
+      if(set.has(key)) set.delete(key); else set.add(key);
+      if(currentRecords.length) rebuildForest(currentRecords);
+    });
+  });
+  legend.querySelectorAll('button.season-item').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      selectedSeason = btn.dataset.season;
+      if(currentRecords.length) rebuildForest(currentRecords);
+    });
+  });
+  const resetBtn = legend.querySelector('.reset-link');
+  if(resetBtn) resetBtn.addEventListener('click', ()=>{
+    hiddenHealth.clear(); hiddenSpecies.clear();
+    if(currentRecords.length) rebuildForest(currentRecords);
+  });
+}
+function resetFiltersMarkup(show){
+  return show ? `<button type="button" class="reset-link">reset filters</button>` : '';
 }
 
 async function selectBorough(b){
@@ -1518,7 +2544,7 @@ function applyThemeChrome(){
   const dark = currentTheme() === 'dark';
   document.getElementById('themeToggle').textContent = dark ? '☀️' : '🌙';
   document.getElementById('themeColorMeta').setAttribute('content', dark ? '#17140F' : '#F1EBDD');
-  if(scene) scene.background = new THREE.Color(getComputedColor('--canvas-bg'));
+  if(scene) applySkyBackground();
 }
 function toggleTheme(){
   const next = currentTheme() === 'dark' ? 'light' : 'dark';
@@ -1536,6 +2562,7 @@ if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribu
     `STAND · v${APP_VERSION} · Joe.K · <a href="https://axisbim.io" target="_blank" rel="noopener">axisbim.io</a> · data: NYC Open Data, 2015 Street Tree Census`;
   renderBoroughRow();
   renderColorModeRow();
+  renderSizeRow();
   renderViewModeRow();
   renderLegend();
   renderScaleBar();
@@ -1544,6 +2571,7 @@ if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribu
   loadBoroughBoundaries();
   loadStateContext();
   loadLongIslandContext();
+  loadWestchesterContext();
 })();
 </script>
 </body>
