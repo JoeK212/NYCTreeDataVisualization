@@ -5,6 +5,21 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.5 - 2026-07-11 - Direct feedback against a marked-up screenshot compared to a real reference
+    map: the Hudson River (NJ/Westchester) and Long Island Sound (Westchester/Long Island) both showed
+    solid land straight across open water. Root cause was new, not the same class of bug as v1.16.4's
+    fix: county boundary data (both the OSM admin relations and the Census fallback) traces each
+    county's real *jurisdictional* extent, and US coastal counties' water jurisdiction legally reaches
+    out into the river/sound to the state line or beyond — well past the actual shoreline. NJ's polygon
+    and Westchester's each separately reach into the Hudson and meet; Westchester's and Long Island's
+    each separately reach into the Sound and meet. Two independently-opaque fills covering the same
+    patch of water reads as an unbroken land bridge. Fixed with targeted shoreline trims (NJ_CONTEXT_BOX,
+    WESTCHESTER_NORTH_BOX/SOUTH_BOX, LONG_ISLAND_MAIN_BOX/NW_BOX — see the strait-trim block right after
+    CONTEXT_CLIP_BOX) applied via a new buildContextGeometry boxFn parameter, sized conservatively so
+    real land (Peekskill, Rye/Port Chester, Northport/Cold Spring Harbor) stays outside the trimmed
+    region rather than risking a bite out of real coastline. This is a deliberate approximation, not a
+    real coastline vector — noted plainly in the code since there's no live-map way to verify it from
+    this sandbox (same limitation flagged during the v1.15.6/v1.15.7 OSM work).
   v1.16.4 - 2026-07-11 - Real coastline via OSM, take two — this time verified against the live
     Overpass endpoint through Claude in Chrome against the actual deployed site
     (nycstreettrees.netlify.app), not blind. Two real bugs found and fixed that v1.15.6/v1.15.7 could
@@ -902,7 +917,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.4';
+const APP_VERSION = '1.16.5';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1397,6 +1412,45 @@ const contextFillMat = new THREE.MeshBasicMaterial({
 // frame edge in WORLD units, not to reproduce a fixed degree offset.
 const CONTEXT_CLIP_BOX = { lonMin: LON_MIN - 0.25, lonMax: LON_MAX + 0.45, latMin: LAT_MIN - 0.28, latMax: LAT_MAX + 0.15 };
 
+// v1.16.5: direct feedback against a marked-up screenshot (compared to a real reference map) — the
+// Hudson River between New Jersey and Westchester, and Long Island Sound between Westchester and Long
+// Island, were both showing solid tan land straight across open water. Root cause is different from
+// every earlier context-fill bug above: it's not a rendering seam, it's that the *source data itself*
+// is wrong for this purpose. Both the OSM admin_level=6 relations and the Census county fallback trace
+// each county's real jurisdictional boundary, and US coastal counties' water jurisdiction legally
+// extends out into the river/sound — to the state line for NJ/NY, and some distance out for NY's own
+// Sound-facing counties — well past the actual shoreline. NJ's polygon and Westchester's polygon each
+// separately reach into the Hudson and meet each other there; Westchester's and Long Island's (Nassau)
+// each separately reach into the Sound and meet there too. Two independent opaque fills that both
+// happen to cover the same patch of water read as an unbroken land bridge.
+//
+// Fixed by trimming each landmass back to an approximate real shoreline in just the two known
+// problem straits, instead of trusting the source polygon's full legal extent. This is a deliberate
+// approximation (no real coastline vector is available to this pipeline — see the OSM coastline note
+// near loadOsmContext), sized conservatively so it trims into open water rather than risking a bite out
+// of real land (Peekskill on Westchester's north end, the Rye/Port Chester CT-border towns, and the
+// Northport/Cold Spring Harbor stretch of Long Island's own north shore all sit outside these boxes on
+// purpose). NJ needs no latitude split — its real shoreline never reaches lonMax anywhere in the clip
+// box, so one tighter box is safe everywhere. Westchester and Long Island each get split into two
+// pieces (submitted as duplicate same-name features below) because a single tighter bound would also
+// have clipped real land elsewhere on that landmass.
+const NJ_CONTEXT_BOX = { ...CONTEXT_CLIP_BOX, lonMax: -73.97 };
+const HUDSON_STRAIT_LAT_SPLIT = 41.02; // roughly the Tarrytown/Nyack latitude, north of which NJ and Westchester no longer face each other across the river
+const WESTCHESTER_NORTH_BOX = { ...CONTEXT_CLIP_BOX, latMin: HUDSON_STRAIT_LAT_SPLIT }; // Peekskill and north — full width, no strait to trim
+const WESTCHESTER_SOUTH_BOX = { ...CONTEXT_CLIP_BOX, latMax: HUDSON_STRAIT_LAT_SPLIT, lonMin: -73.86 }; // Dobbs Ferry/Hastings/Yonkers stretch — trimmed off the Hudson
+const SOUND_STRAIT_LON_SPLIT = -73.65; // roughly Manhasset Neck; west of this is the narrow Westchester/Nassau crossing near the Bronx
+const LONG_ISLAND_MAIN_BOX = { ...CONTEXT_CLIP_BOX, lonMin: SOUND_STRAIT_LON_SPLIT }; // Port Washington east through Northport/Port Jefferson — full latitude, no trim
+const LONG_ISLAND_NW_BOX = { ...CONTEXT_CLIP_BOX, lonMax: SOUND_STRAIT_LON_SPLIT, latMax: 40.85 }; // Great Neck/Kings Point corner — trimmed off the Sound
+// Splits one already-fetched feature list into two clip-box passes under the same name, so
+// buildContextGeometry's centroid/outline dissolve merges them back into a single landmass and label
+// instead of drawing two separately-labeled pieces.
+function splitByStrait(features, boxA, boxB){
+  return [
+    ...features.map(f => ({ ...f, __box: boxA })),
+    ...features.map(f => ({ ...f, __box: boxB })),
+  ];
+}
+
 function lerpOnEdge(a, b, axis, value){
   const idx = axis === 'lon' ? 0 : 1;
   const t = (value - a[idx]) / (b[idx] - a[idx]);
@@ -1646,7 +1700,7 @@ async function loadStateContext(){
   try{
     const osmFeatures = (await loadOsmContext()).filter(f => NJ_OSM_COUNTIES.includes(f.properties.name));
     if(!osmFeatures.length) throw new Error('NJ county relations not found in Overpass result');
-    buildContextGeometry(osmFeatures, () => 'New Jersey'); // merge all five counties under one label
+    buildContextGeometry(osmFeatures, () => 'New Jersey', () => NJ_CONTEXT_BOX); // merge all five counties under one label
     return;
   } catch(err){
     console.warn('STAND: OSM context fetch failed for New Jersey, falling back to county data —', err.message);
@@ -1659,7 +1713,7 @@ async function loadStateContext(){
     // May, Salem, etc.) that don't reach anywhere near the frame, same as it always has for NJ. The
     // outline now dissolves out the county-to-county seams itself (see buildContextGeometry), so
     // there's no separate lower-resolution outline source to fetch anymore.
-    buildContextGeometry(features, () => 'New Jersey');
+    buildContextGeometry(features, () => 'New Jersey', () => NJ_CONTEXT_BOX);
   } catch(err){
     console.warn('STAND: NJ context fetch failed entirely (New Jersey omitted) —', err.message);
   }
@@ -1672,7 +1726,8 @@ async function loadLongIslandContext(){
     const osmFeatures = (await loadOsmContext())
       .filter(f => f.properties.name === 'Nassau County' || f.properties.name === 'Suffolk County');
     if(!osmFeatures.length) throw new Error('Nassau/Suffolk relations not found in Overpass result');
-    buildContextGeometry(osmFeatures, () => 'Long Island');
+    const osmSplit = splitByStrait(osmFeatures, LONG_ISLAND_MAIN_BOX, LONG_ISLAND_NW_BOX);
+    buildContextGeometry(osmSplit, () => 'Long Island', f => f.__box);
     return;
   } catch(err){
     console.warn('STAND: OSM context fetch failed for Long Island, falling back to county data —', err.message);
@@ -1681,7 +1736,8 @@ async function loadLongIslandContext(){
     const features = (await loadContextCounties())
       .filter(f => f.properties.STATE === NY_STATE_FIPS && LONG_ISLAND_COUNTIES.includes(f.properties.NAME));
     if(!features.length) throw new Error('no matching county features in response');
-    buildContextGeometry(features, () => 'Long Island'); // merge both counties under one label
+    const split = splitByStrait(features, LONG_ISLAND_MAIN_BOX, LONG_ISLAND_NW_BOX);
+    buildContextGeometry(split, () => 'Long Island', f => f.__box); // merge both counties under one label
   } catch(err){
     console.warn('STAND: Long Island context fetch failed entirely (outline omitted) —', err.message);
   }
@@ -1692,7 +1748,8 @@ async function loadWestchesterContext(){
   try{
     const osmFeatures = (await loadOsmContext()).filter(f => f.properties.name === 'Westchester County');
     if(!osmFeatures.length) throw new Error('Westchester relation not found in Overpass result');
-    buildContextGeometry(osmFeatures, () => 'Westchester');
+    const osmSplit = splitByStrait(osmFeatures, WESTCHESTER_NORTH_BOX, WESTCHESTER_SOUTH_BOX);
+    buildContextGeometry(osmSplit, () => 'Westchester', f => f.__box);
     return;
   } catch(err){
     console.warn('STAND: OSM context fetch failed for Westchester, falling back to county data —', err.message);
@@ -1701,7 +1758,8 @@ async function loadWestchesterContext(){
     const features = (await loadContextCounties())
       .filter(f => f.properties.STATE === NY_STATE_FIPS && WESTCHESTER_COUNTIES.includes(f.properties.NAME));
     if(!features.length) throw new Error('no matching county features in response');
-    buildContextGeometry(features, () => 'Westchester');
+    const split = splitByStrait(features, WESTCHESTER_NORTH_BOX, WESTCHESTER_SOUTH_BOX);
+    buildContextGeometry(split, () => 'Westchester', f => f.__box);
   } catch(err){
     console.warn('STAND: Westchester context fetch failed entirely (outline omitted) —', err.message);
   }
@@ -1841,11 +1899,15 @@ function mainRingOf(ring){
   return pieces.reduce((a, b) => ringArea(b) > ringArea(a) ? b : a);
 }
 
-function buildContextGeometry(features, nameFn){
+function buildContextGeometry(features, nameFn, boxFn){
+  // v1.16.5: boxFn lets a caller clip individual features (or even the same feature submitted twice,
+  // split into sub-boxes) to something tighter than the shared CONTEXT_CLIP_BOX — see the strait-trim
+  // constants below. Defaults to the old shared-box behavior when omitted.
+  boxFn = boxFn || (() => CONTEXT_CLIP_BOX);
   // Clip every feature's geometry to the local box up front, so the outline pass, fill pass, and
   // centroid/label calculation all agree on the same (proportionate) shape.
   const clippedRaw = features
-    .map(f => ({ name: nameFn(f), geom: clipGeometryToBox(f.geometry, CONTEXT_CLIP_BOX) }))
+    .map(f => ({ name: nameFn(f), geom: clipGeometryToBox(f.geometry, boxFn(f)) }))
     .filter(f => f.geom);
   if(!clippedRaw.length) return;
 
