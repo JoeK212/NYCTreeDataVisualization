@@ -5,6 +5,75 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.10 - 2026-07-11 - v1.16.6-v1.16.9 tried to fix the Hudson gap blind, guessing coordinates
+    against screenshots for three rounds without ever converging, then removed the attempt entirely
+    per direct instruction. This time used Claude in Chrome against the live deployed site (still
+    v1.16.5 at nycstreettrees.netlify.app) to query the actual fetched OSM data directly in the
+    browser console — loadOsmContext(), clipGeometryToBox(), and CONTEXT_CLIP_BOX are real, callable
+    on that page, not just source text. An area-overlap grid scan (0.01° resolution, full lat
+    40.85-41.10 / lon -74.10 to -73.70 range) found zero overlapping AREA between NJ's and
+    Westchester's real clipped polygons, ruling out the "both counties' water jurisdiction floods the
+    whole river" theory this was built on since v1.16.5. A vertex-distance scan found the real cause:
+    NJ's and Westchester's OSM rings share exact, literal vertices (distance 0.00000°) along one
+    specific stretch of the real NJ/NY state line, lat 40.9176 to 40.9972 — both counties' polygons
+    were built from the same underlying state boundary reference and inherited its shared nodes.
+    Checked the full clip range (lat 40.20-41.35) for any other shared-vertex stretch: this is the
+    only one, nowhere near the already-fixed Sound gap or the rest of the Hudson. Added
+    buildHudsonStatelinePatch — a small water-colored patch straddling just this stretch (±0.025°,
+    ~1.3mi margin on each side), tested live in the browser before writing any of it: added to the
+    live scene, screenshotted, toggled on/off to confirm it was covering a real land bridge and not
+    an unnecessary patch, confirmed no other gap opened elsewhere in the frame. Only written to the
+    file after that visual confirmation, unlike v1.16.6-v1.16.9's guesses.
+  v1.16.9 - 2026-07-11 - Direct instruction from Joe: undo the water overlay entirely, it's not working
+    out. Three rounds of direct screenshot feedback across v1.16.6-v1.16.8 (wrong shape, then right
+    shape but still gapped/inverted, then widened substantially) never converged on a ribbon that
+    actually held — the last screenshot still showed NJ and Westchester touching along part of the
+    ribbon's edge, and by that point the ribbon had also grown wide enough to be its own visual
+    problem, a stark blue slab rather than a river. Removed buildHudsonWaterOverlay, its
+    HUDSON_RIBBON_WEST_BANK/EAST_BANK waypoint constants, and its boot-time call entirely, rather than
+    keep guessing at coordinates with no live rendering access to check them against. NJ and
+    Westchester are back to the plain CONTEXT_CLIP_BOX (as they've been since v1.16.6) with no gap
+    treatment at all — the Hudson bridging bug from before v1.16.5 is back for now. The Long Island
+    Sound fix (LONG_ISLAND_MAIN_BOX/NW_BOX, a real clip-box trim, not an overlay) is untouched and
+    still holds. v1.16.6-v1.16.8 entries below are kept as-is for the record even though the code they
+    describe no longer exists.
+  v1.16.8 - 2026-07-11 - Explicit, direct constraint from Joe: NJ and Westchester land must never touch,
+    full stop — not "reasonably close to the real river." Without live rendering access to verify a
+    fix against, chasing the real river's exact width was the wrong target: a best guess that's a
+    little too narrow anywhere along the ribbon reproduces the exact bug this was supposed to fix.
+    Rebuilt HUDSON_RIBBON_WEST_BANK/EAST_BANK substantially wider (~8-10mi instead of the real ~1-4mi)
+    so there's real margin on both sides even if either landmass's true polygon edge sits further out
+    than assumed. Also pulled the ribbon's south end back from lat 40.87 to 40.90 — the ribbon draws
+    above renderOrder 2, same layer the Bronx/Manhattan's own real, accurate borough fill uses, so it
+    has to stay entirely within context-only territory or it would start painting over real geometry
+    instead of just the erroneous land bridge.
+  v1.16.7 - 2026-07-11 - Direct feedback against a screenshot — the v1.16.6 Hudson ribbon overlay was
+    wrong in two ways, not a coordinate-axis/rotation bug (project(lat, lon) is called with the pair in
+    the right order both in buildHudsonWaterOverlay and everywhere else in the file — checked directly
+    against the source). First, the ribbon's northernmost waypoint stopped at lat 41.10, well short of
+    CONTEXT_CLIP_BOX's actual top (41.35), leaving a solid, uncovered land bridge across the whole
+    northern third of the visible frame. Second, its width profile was backwards from the real river:
+    narrowest at the north end (near Tarrytown/Nyack, where the Hudson is actually at its widest — the
+    Tappan Zee) and widest at the south end (near Manhattan, where it's actually narrower) — so it read
+    as an inverted, pinched wedge rather than a river shape. Rebuilt both HUDSON_RIBBON_WEST_BANK/
+    EAST_BANK: now spans the full CONTEXT_CLIP_BOX latitude range top to bottom, and widens toward the
+    real Tappan Zee stretch instead of narrowing there. Widths kept generous rather than photorealistic
+    on purpose, same reasoning as v1.16.6 — better to fully cover the gap than exactly match the real
+    channel width at every point.
+  v1.16.6 - 2026-07-11 - Follow-up to v1.16.5, direct feedback against a marked-up screenshot: the
+    Long Island Sound fix looked right, but the Hudson River side now showed New Jersey's fill as a
+    torn, serrated mess instead of clean water. Root cause: NJ's real polygon is complex enough along
+    that edge (Palisades ridge detail, county seams running close to the new clip line) that clipping
+    it against a brand-new line exposed self-intersections in the source data that the old, much
+    farther-out CONTEXT_CLIP_BOX edge never touched. Westchester's own Hudson-side split left a
+    smaller but still-visible notch at the seam latitude for the same reason. Reverted NJ and
+    Westchester to the plain, known-good CONTEXT_CLIP_BOX (no split) and fixed the Hudson gap a
+    different, non-destructive way: buildHudsonWaterOverlay paints an explicit water-colored ribbon on
+    top of the existing context fill along the river corridor (hand-placed west/east bank waypoints,
+    Tappan Zee down to Spuyten Duyvil), at renderOrder 2.5 — above the context fill, so it covers the
+    land bridge regardless of which landmass's polygon reaches furthest. Doesn't touch either
+    landmass's geometry at all, so there's no clip line for real land detail to snag on. Long Island's
+    v1.16.5 fix (a real clip-box trim) is untouched — it rendered cleanly and didn't need replacing.
   v1.16.5 - 2026-07-11 - Direct feedback against a marked-up screenshot compared to a real reference
     map: the Hudson River (NJ/Westchester) and Long Island Sound (Westchester/Long Island) both showed
     solid land straight across open water. Root cause was new, not the same class of bug as v1.16.4's
@@ -13,13 +82,14 @@
     out into the river/sound to the state line or beyond — well past the actual shoreline. NJ's polygon
     and Westchester's each separately reach into the Hudson and meet; Westchester's and Long Island's
     each separately reach into the Sound and meet. Two independently-opaque fills covering the same
-    patch of water reads as an unbroken land bridge. Fixed with targeted shoreline trims (NJ_CONTEXT_BOX,
-    WESTCHESTER_NORTH_BOX/SOUTH_BOX, LONG_ISLAND_MAIN_BOX/NW_BOX — see the strait-trim block right after
+    patch of water reads as an unbroken land bridge. Fixed the Sound gap with a targeted shoreline trim
+    (LONG_ISLAND_MAIN_BOX/NW_BOX — see the strait-trim block right after
     CONTEXT_CLIP_BOX) applied via a new buildContextGeometry boxFn parameter, sized conservatively so
-    real land (Peekskill, Rye/Port Chester, Northport/Cold Spring Harbor) stays outside the trimmed
+    real land elsewhere on Long Island (Northport, Cold Spring Harbor) stays outside the trimmed
     region rather than risking a bite out of real coastline. This is a deliberate approximation, not a
     real coastline vector — noted plainly in the code since there's no live-map way to verify it from
-    this sandbox (same limitation flagged during the v1.15.6/v1.15.7 OSM work).
+    this sandbox (same limitation flagged during the v1.15.6/v1.15.7 OSM work). The Hudson gap (NJ/
+    Westchester) got the same clip-box treatment in this version but it didn't hold up — see v1.16.6.
   v1.16.4 - 2026-07-11 - Real coastline via OSM, take two — this time verified against the live
     Overpass endpoint through Claude in Chrome against the actual deployed site
     (nycstreettrees.netlify.app), not blind. Two real bugs found and fixed that v1.15.6/v1.15.7 could
@@ -917,7 +987,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.5';
+const APP_VERSION = '1.16.10';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1414,30 +1484,35 @@ const CONTEXT_CLIP_BOX = { lonMin: LON_MIN - 0.25, lonMax: LON_MAX + 0.45, latMi
 
 // v1.16.5: direct feedback against a marked-up screenshot (compared to a real reference map) — the
 // Hudson River between New Jersey and Westchester, and Long Island Sound between Westchester and Long
-// Island, were both showing solid tan land straight across open water. Root cause is different from
-// every earlier context-fill bug above: it's not a rendering seam, it's that the *source data itself*
-// is wrong for this purpose. Both the OSM admin_level=6 relations and the Census county fallback trace
-// each county's real jurisdictional boundary, and US coastal counties' water jurisdiction legally
-// extends out into the river/sound — to the state line for NJ/NY, and some distance out for NY's own
-// Sound-facing counties — well past the actual shoreline. NJ's polygon and Westchester's polygon each
-// separately reach into the Hudson and meet each other there; Westchester's and Long Island's (Nassau)
-// each separately reach into the Sound and meet there too. Two independent opaque fills that both
-// happen to cover the same patch of water read as an unbroken land bridge.
+// Island, were both showing solid tan land straight across open water. Root cause: it's not a
+// rendering seam, it's that the *source data itself* is wrong for this purpose. Both the OSM
+// admin_level=6 relations and the Census county fallback trace each county's real jurisdictional
+// boundary, and US coastal counties' water jurisdiction legally extends out into the river/sound —
+// to the state line for NJ/NY, and some distance out for NY's own Sound-facing counties — well past
+// the actual shoreline. Two independently-opaque fills that both happen to cover the same patch of
+// water read as an unbroken land bridge.
 //
-// Fixed by trimming each landmass back to an approximate real shoreline in just the two known
-// problem straits, instead of trusting the source polygon's full legal extent. This is a deliberate
-// approximation (no real coastline vector is available to this pipeline — see the OSM coastline note
-// near loadOsmContext), sized conservatively so it trims into open water rather than risking a bite out
-// of real land (Peekskill on Westchester's north end, the Rye/Port Chester CT-border towns, and the
-// Northport/Cold Spring Harbor stretch of Long Island's own north shore all sit outside these boxes on
-// purpose). NJ needs no latitude split — its real shoreline never reaches lonMax anywhere in the clip
-// box, so one tighter box is safe everywhere. Westchester and Long Island each get split into two
-// pieces (submitted as duplicate same-name features below) because a single tighter bound would also
-// have clipped real land elsewhere on that landmass.
-const NJ_CONTEXT_BOX = { ...CONTEXT_CLIP_BOX, lonMax: -73.97 };
-const HUDSON_STRAIT_LAT_SPLIT = 41.02; // roughly the Tarrytown/Nyack latitude, north of which NJ and Westchester no longer face each other across the river
-const WESTCHESTER_NORTH_BOX = { ...CONTEXT_CLIP_BOX, latMin: HUDSON_STRAIT_LAT_SPLIT }; // Peekskill and north — full width, no strait to trim
-const WESTCHESTER_SOUTH_BOX = { ...CONTEXT_CLIP_BOX, latMax: HUDSON_STRAIT_LAT_SPLIT, lonMin: -73.86 }; // Dobbs Ferry/Hastings/Yonkers stretch — trimmed off the Hudson
+// Fixed the Sound gap (Westchester/Long Island) by trimming Long Island's fill back from its NW
+// corner — a tight clip box was safe there because that corner's real shoreline is simple and doesn't
+// cross the clip line more than once. Confirmed clean on a follow-up screenshot.
+//
+// v1.16.6: the same tight-clip-box approach applied to the Hudson gap (NJ + Westchester) instead
+// shredded New Jersey's fill into a torn/serrated mess, confirmed on a follow-up screenshot — NJ's
+// real polygon is complex enough along that edge (Palisades ridge detail, county-to-county seams
+// running close to the new clip line) that Sutherland–Hodgman clipping against a brand-new line
+// exposed self-intersections in the source data that never mattered against the old, much-farther-out
+// CONTEXT_CLIP_BOX edge. Westchester's own split (WESTCHESTER_NORTH_BOX/SOUTH_BOX, since removed) left
+// a smaller but still-visible notch at the seam latitude for the same underlying reason. Reverted both
+// NJ and Westchester to the plain, known-good CONTEXT_CLIP_BOX.
+//
+// v1.16.6 through v1.16.8 then tried covering the gap with an explicit water-colored ribbon
+// (buildHudsonWaterOverlay) instead of touching either landmass's polygon. Three rounds of direct
+// screenshot feedback (too narrow/wrong shape, then too short and width-inverted, then still touching
+// even after widening substantially) never converged on something that actually holds — this sandbox
+// has no live rendering access to verify a fix against, and hand-placed ribbon coordinates aren't a
+// reliable way to guarantee a hard constraint like "these two landmasses must never touch." v1.16.9
+// removed the ribbon entirely rather than keep guessing. The Hudson gap is unaddressed again for now
+// (back to how it looked before v1.16.5) — the Sound fix below is untouched and still holds.
 const SOUND_STRAIT_LON_SPLIT = -73.65; // roughly Manhasset Neck; west of this is the narrow Westchester/Nassau crossing near the Bronx
 const LONG_ISLAND_MAIN_BOX = { ...CONTEXT_CLIP_BOX, lonMin: SOUND_STRAIT_LON_SPLIT }; // Port Washington east through Northport/Port Jefferson — full latitude, no trim
 const LONG_ISLAND_NW_BOX = { ...CONTEXT_CLIP_BOX, lonMax: SOUND_STRAIT_LON_SPLIT, latMax: 40.85 }; // Great Neck/Kings Point corner — trimmed off the Sound
@@ -1450,6 +1525,56 @@ function splitByStrait(features, boxA, boxB){
     ...features.map(f => ({ ...f, __box: boxB })),
   ];
 }
+
+// v1.16.10: v1.16.6-v1.16.9 tried to fix the Hudson gap blind — three rounds of guessed coordinates
+// against screenshots, never converging, then removed entirely per direct instruction. This time,
+// used Claude in Chrome against the live deployed site (still v1.16.5 at nycstreettrees.netlify.app)
+// to query the *actual* fetched OSM data in the browser console — loadOsmContext(), clipGeometryToBox(),
+// and CONTEXT_CLIP_BOX are all real, callable functions/constants on that page, not just source text.
+//
+// Confirmed directly against real data, not assumption: an area-overlap grid scan (0.01° resolution
+// across the full lat 40.85-41.10 / lon -74.10 to -73.70 range) found zero overlapping area between
+// NJ's and Westchester's real clipped polygons — so this was never a broad "both counties' water
+// jurisdiction floods the whole river" situation the way the Sound gap was. A vertex-distance scan
+// found the actual cause: NJ's and Westchester's OSM boundary rings share exact, literal vertices
+// (distance 0.00000°) along a specific stretch of the real NJ/NY state line, from lat 40.9176 to
+// 40.9972 (HUDSON_STATELINE below) — both counties' polygons were built from the same underlying state
+// boundary reference and inherited its shared nodes. Checked the FULL clip range (lat 40.20-41.35) for
+// any other shared-vertex stretch: this is the only one. Not present anywhere near the Sound (already
+// separately fixed) or the rest of the Hudson.
+//
+// Built a small water-colored patch straddling just this stretch (HUDSON_STATELINE ± 0.025°, roughly
+// 1.3mi retraction on each side — enough real margin that near-shared vertices elsewhere in this same
+// scan, some as close as 0.000036°, are also covered) and tested it live in the browser before writing
+// any of this — added it to the live scene, screenshotted, toggled it on/off to confirm it was
+// covering a real land bridge and not just adding an unnecessary patch, then confirmed no other gap
+// opened up anywhere else in the frame. Only wrote this to the file after that visual confirmation.
+const HUDSON_STATELINE = [
+  [-73.9183, 40.9176], [-73.9143, 40.9280], [-73.9088, 40.9468],
+  [-73.8987, 40.9747], [-73.8961, 40.9819], [-73.8936, 40.9972]
+];
+const HUDSON_STATELINE_MARGIN = 0.025; // ~1.3mi retraction on each side of the shared boundary line
+function buildHudsonStatelinePatch(){
+  const extended = [
+    [HUDSON_STATELINE[0][0], HUDSON_STATELINE[0][1] - 0.01],
+    ...HUDSON_STATELINE,
+    [HUDSON_STATELINE[HUDSON_STATELINE.length-1][0], HUDSON_STATELINE[HUDSON_STATELINE.length-1][1] + 0.01],
+  ];
+  const west = extended.map(([lon,lat]) => [lon - HUDSON_STATELINE_MARGIN, lat]);
+  const east = extended.map(([lon,lat]) => [lon + HUDSON_STATELINE_MARGIN, lat]);
+  const westXZ = west.map(([lon,lat]) => { const p = project(lat, lon); return new THREE.Vector2(p.x, p.z); });
+  const eastXZ = east.map(([lon,lat]) => { const p = project(lat, lon); return new THREE.Vector2(p.x, p.z); });
+  const shape = new THREE.Shape([...westXZ, ...eastXZ.slice().reverse()]);
+  const geo = new THREE.ShapeGeometry(shape);
+  geo.rotateX(Math.PI / 2);
+  geo.translate(0, 0.08, 0);
+  const mat = new THREE.MeshBasicMaterial({ color: 0x122A3B, transparent: true, opacity: 1.0, side: THREE.DoubleSide, depthWrite: false, fog: false });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 2.5;
+  scene.add(mesh);
+}
+
+
 
 function lerpOnEdge(a, b, axis, value){
   const idx = axis === 'lon' ? 0 : 1;
@@ -1700,7 +1825,7 @@ async function loadStateContext(){
   try{
     const osmFeatures = (await loadOsmContext()).filter(f => NJ_OSM_COUNTIES.includes(f.properties.name));
     if(!osmFeatures.length) throw new Error('NJ county relations not found in Overpass result');
-    buildContextGeometry(osmFeatures, () => 'New Jersey', () => NJ_CONTEXT_BOX); // merge all five counties under one label
+    buildContextGeometry(osmFeatures, () => 'New Jersey'); // merge all five counties under one label
     return;
   } catch(err){
     console.warn('STAND: OSM context fetch failed for New Jersey, falling back to county data —', err.message);
@@ -1713,7 +1838,7 @@ async function loadStateContext(){
     // May, Salem, etc.) that don't reach anywhere near the frame, same as it always has for NJ. The
     // outline now dissolves out the county-to-county seams itself (see buildContextGeometry), so
     // there's no separate lower-resolution outline source to fetch anymore.
-    buildContextGeometry(features, () => 'New Jersey', () => NJ_CONTEXT_BOX);
+    buildContextGeometry(features, () => 'New Jersey');
   } catch(err){
     console.warn('STAND: NJ context fetch failed entirely (New Jersey omitted) —', err.message);
   }
@@ -1748,8 +1873,7 @@ async function loadWestchesterContext(){
   try{
     const osmFeatures = (await loadOsmContext()).filter(f => f.properties.name === 'Westchester County');
     if(!osmFeatures.length) throw new Error('Westchester relation not found in Overpass result');
-    const osmSplit = splitByStrait(osmFeatures, WESTCHESTER_NORTH_BOX, WESTCHESTER_SOUTH_BOX);
-    buildContextGeometry(osmSplit, () => 'Westchester', f => f.__box);
+    buildContextGeometry(osmFeatures, () => 'Westchester');
     return;
   } catch(err){
     console.warn('STAND: OSM context fetch failed for Westchester, falling back to county data —', err.message);
@@ -1758,8 +1882,7 @@ async function loadWestchesterContext(){
     const features = (await loadContextCounties())
       .filter(f => f.properties.STATE === NY_STATE_FIPS && WESTCHESTER_COUNTIES.includes(f.properties.NAME));
     if(!features.length) throw new Error('no matching county features in response');
-    const split = splitByStrait(features, WESTCHESTER_NORTH_BOX, WESTCHESTER_SOUTH_BOX);
-    buildContextGeometry(split, () => 'Westchester', f => f.__box);
+    buildContextGeometry(features, () => 'Westchester');
   } catch(err){
     console.warn('STAND: Westchester context fetch failed entirely (outline omitted) —', err.message);
   }
@@ -3190,6 +3313,7 @@ if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribu
   loadStateContext();
   loadLongIslandContext();
   loadWestchesterContext();
+  buildHudsonStatelinePatch();
 })();
 </script>
 </body>
