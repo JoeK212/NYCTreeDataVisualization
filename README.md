@@ -12,7 +12,7 @@ Built by Joe.K · [axisbim.io](https://axisbim.io)
 ## Files
 
 - `index.html` — the whole app. Three.js (r128, via cdnjs), no build step, no dependencies to install.
-- `audit_deploy.js` — local pre-ship QA gate, 206 checks as of v1.15.8. Run `node audit_deploy.js`
+- `audit_deploy.js` — local pre-ship QA gate, 231 checks as of v1.16.3. Run `node audit_deploy.js`
   before every deploy; it exits 1 on any failure. Committed here (not the usual convention across
   Joe's other tools, which keep this local-only) so a future session — mine or anyone's — has the
   full regression history and can verify a change without rebuilding the checks from scratch.
@@ -36,7 +36,7 @@ Before every push: `node audit_deploy.js` locally, confirm it's clean.
 
 ## Data sources
 
-- Tree records: [2015 Street Tree Census](https://data.cityofnewyork.us/Environment/2015-Street-Tree-Census-Tree-Data/uvpi-gqnh), NYC Open Data (SODA API, live-fetched, not bundled)
+- Tree records: [2015 Street Tree Census](https://data.cityofnewyork.us/Environment/2015-Street-Tree-Census-Tree-Data/uvpi-gqnh) and [2005 Street Tree Census](https://data.cityofnewyork.us/Environment/2005-Street-Tree-Census/29bw-z7pj), NYC Open Data (SODA API, live-fetched, not bundled). A third census (1995) exists on the same portal but isn't wired up yet — see the in-file changelog (v1.16.0) for why.
 - Borough boundaries: NYC Open Data
 - Context landmasses (NJ / Westchester / Long Island): a nationwide Census county-boundary file — see
   the in-file changelog (top of `index.html`) for the full history of what was tried here, including
@@ -47,5 +47,5 @@ Before every push: `node audit_deploy.js` locally, confirm it's clean.
 
 ## Version
 
-Current: **v1.15.8**. Full changelog lives at the top of `index.html` — every version bump, including
+Current: **v1.16.3**. Full changelog lives at the top of `index.html` — every version bump, including
 UI-only changes, is logged there with root cause and what was verified.

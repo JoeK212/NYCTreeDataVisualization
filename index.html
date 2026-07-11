@@ -5,6 +5,63 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.3 - 2026-07-11 - Direct feedback: the UI read as dated/"Windows 95." Root cause wasn't the
+    sharp corners (zero border-radius is deliberate brand language across the whole tool suite) — it
+    was that .btn had no :hover rule and no transition property at all, so every state change was an
+    instant snap, and every toggle-group row (Borough, Census year, Canopy color, Trunk size, View)
+    rendered as individually-bordered pill buttons with gaps, which reads as a legacy toolbar
+    regardless of corner radius. Fixed both: added hover states + a 150ms ease transition to the base
+    .btn (skipped for .active/:disabled so a selected or disabled button doesn't compete with its own
+    hover), plus a :active press feedback (1px translateY). Converted the five toggle-group rows to a
+    segmented-control treatment — one shared outer border per group, buttons packed edge-to-edge with
+    a thin internal divider instead of a gap, active state as a solid accent fill — same sharp-corner
+    language, just applied at the group level. Standalone one-shot action buttons (Reseed, Recenter,
+    Watch it grow) deliberately kept as separate pills, not folded into the segmented treatment: they
+    aren't a set of mutually-exclusive states, and keeping them visually distinct preserves the
+    difference between "pick a state" and "do a thing."
+  v1.16.2 - 2026-07-11 - Direct feedback: the growth-transition crossfade happened too fast to
+    actually read as a transition. GROW_DURATION_MS 3200 → 6500.
+  v1.16.1 - 2026-07-11 - New feature, direct follow-up to v1.16.0: "watch it grow" animated
+    transitions between census years, instead of v1.16.0's instant swap. Added a dedicated "Watch it
+    grow" button that always plays the full 2005 → 2015 arc, and made the Census year buttons
+    themselves animate too (selectYear now delegates to growToYear rather than an instant reload).
+    Important honest caveat, also stated in the help modal: this is a crossfade between two
+    independently-sampled censuses, not a per-tree growth simulation — NYC's tree censuses don't
+    share a consistent ID across years, so there's no way to know which (if any) 2015 tree
+    corresponds to a given 2005 one. Implementation: rebuildForest's mesh-building step was
+    deliberately NOT refactored to share code with the new transition path — several audit checks
+    pattern-match its exact structure, and touching it risked regressing 215 passing checks for a
+    purely internal reuse benefit. Instead added buildForestLayer as a standalone twin that returns
+    meshes instead of touching the forestLines/forestPoints/forestPointsFar globals, so a transition
+    can hold two complete layers alive in the scene at once (old fading out, new fading in) — something
+    rebuildForest's single-layer tear-down-then-rebuild model can't represent. Crossfade animates
+    opacity plus canopy point *size* (not scale/position) for the incoming layer: scaling a
+    Points/Mesh object scales around its own local origin, and since these meshes bake real
+    world-space coordinates straight into their vertex buffers, a uniform scale would have dragged
+    every tree toward world (0,0,0) instead of growing in place — point size is a pure material
+    scalar with no such side effect. Interaction (borough/year/reseed) is blocked via a `.growing`
+    class on the control panel for the transition's duration, since a rebuildForest triggered
+    mid-animation would orphan the in-flight layer objects with no way to dispose them.
+  v1.16.0 - 2026-07-11 - New feature (not a bug fix): multi-year census support. NYC ran three
+    decadal street tree censuses — 1995, 2005, 2015 — and until now STAND only ever fetched 2015.
+    Added a Census year control (Borough's new sibling row) that swaps the entire sample between the
+    2005 and 2015 datasets, same borough/filter selections. 1995 deliberately NOT included yet:
+    multiple different resource IDs exist for it across public catalogs with no way to confirm from
+    this sandbox which is canonical, or whether it carries real lat/lon vs. address-only data later
+    geocoded by a third party — after this session's OSM saga, shipping another unverified live-data
+    assumption isn't worth repeating. 2005 (29bw-z7pj) was confirmed live via its public CSV/JSON
+    catalog export, with a schema close enough to 2015's to normalize cleanly: no tree_id (OBJECTID
+    substitutes fine for per-tree seeding) and no separate alive/dead flag (its single `status` column
+    already carries the health value directly — Good/Fair/Poor — so it's mapped straight to `health`
+    with no status filter, rather than assuming an "Alive" value that isn't in its column list).
+    CENSUS_YEARS config centralizes both years' dataset id, field names, and $where clause so adding a
+    third year later is a config entry, not a rewrite. Cache keys now include year (`year:borough`) so
+    switching years/boroughs back and forth doesn't refetch redundantly. Per-tree info card and toast
+    messages now show which census year a record came from. Help modal and footer updated to describe
+    both years instead of hardcoding 2015. Same graceful-degradation safety net as everything else in
+    this data layer: a bad fetch (wrong field name, network issue) falls back to an offline synthetic
+    sample with a toast, never a broken map — same protection this session's OSM work leaned on
+    repeatedly, extended to a second live dataset now instead of just the one.
   v1.15.8 - 2026-07-11 - Rolled back the v1.15.6/v1.15.7 OSM Overpass attempt entirely, at direct
     request after v1.15.7 (a real, well-reasoned fix for a genuine query-size problem) still showed no
     visible change. Without a way to test the live fetch from this sandbox (overpass-api.de is blocked
@@ -525,12 +582,40 @@
     padding:9px 14px; border-radius:0;
     border:1.5px solid var(--ink); background:var(--ink); color:var(--paper);
     cursor:pointer;
+    transition:background-color .15s ease, border-color .15s ease, color .15s ease, transform .08s ease;
   }
   .btn.secondary{background:transparent; color:var(--ink);}
   .btn.ghost{background:transparent; border-color:transparent; color:var(--ink-soft); padding:6px 8px;}
   .btn:disabled{opacity:.5; cursor:not-allowed;}
   .btn.active{background:var(--accent); border-color:var(--accent-deep); color:#fff;}
+  /* v1.16.3: standalone action buttons (Reseed, Recenter, Watch it grow) — hover/press feedback that
+     was entirely missing before (every state change used to be an instant snap, no :hover rule
+     existed at all). Skipped for .active/:disabled so a selected state or a disabled button doesn't
+     visually compete with its own hover. */
+  .btn.secondary:hover:not(.active):not(:disabled){background:var(--line); border-color:var(--ink-soft);}
+  .btn:not(.secondary):hover:not(.active):not(:disabled){background:var(--ink-soft); border-color:var(--ink-soft);}
+  .btn:active:not(:disabled){transform:translateY(1px);}
   select, button{font-family:var(--font-ui); color:var(--ink); cursor:pointer;}
+
+  /* v1.16.3: segmented-control treatment for toggle-group rows (Borough, Census year, Canopy color,
+     Trunk size, View) — direct feedback that the previous "row of individually-bordered pill buttons
+     with gaps between them" read as a dated toolbar. One shared outer border per group, buttons
+     packed edge-to-edge with a thin internal divider instead of a gap, is the pattern most contemporary
+     pickers (segmented controls, tab groups) converge on — same sharp-corner, zero-border-radius
+     language as the rest of the suite, just applied at the group level instead of the button level.
+     Standalone action buttons (Reseed/Recenter/Watch it grow) are NOT part of this — those are
+     one-shot actions, not a set of mutually-exclusive states, so keeping them as separate pills
+     preserves the visual distinction between "pick a state" and "do a thing" raised in feedback. */
+  .row.segmented{
+    display:inline-flex; flex-wrap:wrap; gap:0; border:1.5px solid var(--ink); background:var(--card);
+  }
+  .row.segmented .btn{
+    border:none; border-radius:0; background:transparent; color:var(--ink);
+    padding:8px 13px;
+  }
+  .row.segmented .btn:not(:last-child){border-right:1.5px solid var(--line);}
+  .row.segmented .btn.active{background:var(--accent); border-color:transparent; color:#fff;}
+  .row.segmented .btn:hover:not(.active):not(:disabled){background:var(--line);}
 
   header.top{
     padding:calc(20px + env(safe-area-inset-top)) 20px 14px;
@@ -551,6 +636,11 @@
     padding:14px 16px; margin-bottom:14px;
     display:flex; flex-wrap:wrap; gap:10px 18px; align-items:center;
   }
+  /* v1.16.1: while a growth-transition crossfade is animating, block borough/year/reseed interaction
+     — the transition owns forestLines/forestPoints/forestPointsFar's global references for its
+     duration, and a click that reassigns them mid-animation (another rebuildForest) would leave the
+     in-flight old/new layer objects orphaned in the scene with no way to dispose them. */
+  .panel.growing{opacity:.55; pointer-events:none; transition:opacity .25s;}
   .panel .group{display:flex; flex-direction:column; gap:6px;}
   .panel .group label{font-family:var(--font-ui); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-soft);}
   .row{display:flex; gap:6px; flex-wrap:wrap;}
@@ -685,18 +775,28 @@
 
 <main id="main">
 
-  <div class="panel">
+  <div class="panel" id="controlPanel">
     <div class="group">
       <label>Borough</label>
-      <div class="row" id="boroughRow"></div>
+      <div class="row segmented" id="boroughRow"></div>
+    </div>
+    <div class="group">
+      <label>Census year</label>
+      <div class="row segmented" id="yearRow"></div>
+    </div>
+    <div class="group">
+      <label>Time-lapse</label>
+      <div class="row">
+        <button class="btn secondary" id="growBtn" title="Animate a crossfade from the 2005 census to 2015 — watch the canopy grow">▶ Watch it grow</button>
+      </div>
     </div>
     <div class="group">
       <label>Canopy color</label>
-      <div class="row" id="colorModeRow"></div>
+      <div class="row segmented" id="colorModeRow"></div>
     </div>
     <div class="group">
       <label>Trunk size</label>
-      <div class="row" id="sizeRow"></div>
+      <div class="row segmented" id="sizeRow"></div>
     </div>
     <div class="group">
       <label>Sample</label>
@@ -706,7 +806,7 @@
     </div>
     <div class="group">
       <label>View</label>
-      <div class="row" id="viewModeRow"></div>
+      <div class="row segmented" id="viewModeRow"></div>
     </div>
     <div class="group">
       <label>Camera</label>
@@ -745,9 +845,9 @@
   <div class="help-panel">
     <button class="help-close" id="helpClose" aria-label="Close help">×</button>
     <h2>What am I looking at?</h2>
-    <p>Every structure in this scene is grown from one real tree record in NYC's
-      <a href="https://data.cityofnewyork.us/Environment/2015-Street-Tree-Census-Tree-Data/uvpi-gqnh" target="_blank" rel="noopener">2015 Street Tree Census</a>,
-      fetched live from NYC Open Data. Species, trunk diameter, health, and location all come from the real record —
+    <p>Every structure in this scene is grown from one real tree record in one of NYC's decadal
+      <a href="https://data.cityofnewyork.us/Environment/2015-Street-Tree-Census-Tree-Data/uvpi-gqnh" target="_blank" rel="noopener">Street Tree Censuses</a>
+      (2005 or 2015 — pick one under Census year), fetched live from NYC Open Data. Species, trunk diameter, health, and location all come from the real record —
       nothing is invented except the branch shape itself, which is procedurally grown (seeded per tree, so the same
       record always grows the same shape).</p>
     <h3>Reading the map</h3>
@@ -759,6 +859,8 @@
       <li><b>Canopy color — Species</b>: each species gets a consistent hue; the legend below the map shows the top species in the current sample.</li>
       <li><b>Legend swatches are toggles</b>: click any entry in the legend to hide every tree in that category (trunk and canopy) from the map; click again to bring it back. A "reset filters" link appears once something is hidden.</li>
       <li><b>Canopy color — Season</b>: purely a display style, not real census data — each tree is recolored for Spring/Summer/Fall/Winter. Pick a season from the legend below; there's nothing to toggle here since it's not a per-tree category.</li>
+      <li><b>Census year</b> switches the entire sample between the 2005 and 2015 censuses — same borough/filters, different decade. The two years have slightly different source schemas (2005 has no separate alive/dead flag, for instance), normalized to the same fields shown everywhere else in the app.</li>
+      <li><b>Watch it grow</b> animates a crossfade from the 2005 census to 2015 instead of an instant swap — the old canopy fades out as the new one grows in. It's a real transition between two independently-sampled censuses, not a per-tree growth simulation: NYC's censuses don't share a consistent ID across years, so there's no way to know which 2015 tree (if any) corresponds to a given 2005 one.</li>
       <li><b>Trunk size</b> filters by real trunk diameter (Young/Semi-mature/Mature) — independent of and combinable with whatever's in the Canopy color legend above.</li>
       <li>Branch <i>diameter</i> and depth scale with the tree's real trunk diameter (DBH) — bigger, older trees grow taller, more branched structures. Branch geometry only renders once you're zoomed in close; from farther out, canopy switches to a sparser, crisper dot set built specifically to stay legible at that distance rather than blur into a solid mass.</li>
       <li>The scale bar and borough labels are derived from the real lat/long projection, not estimated.</li>
@@ -771,7 +873,7 @@
       <li><b>Recenter</b>: snaps the camera back to the current view preset, undoing any pan/orbit/zoom.</li>
       <li><b>View — 3D / Plan</b>: switch between an oblique angle and a true top-down map view.</li>
       <li><b>Compass dial</b> (top-right of the map): click to reset orientation to north-up without changing zoom or pan.</li>
-      <li><b>Tap a tree</b>: any canopy point can be tapped/clicked to show that tree's real record — species, trunk diameter, health, borough, and tree ID.</li>
+      <li><b>Tap a tree</b>: any canopy point can be tapped/clicked to show that tree's real record — species, trunk diameter, health, borough, census year, and tree ID.</li>
     </ul>
     <p class="help-footnote">Built by Joe.K · <a href="https://axisbim.io" target="_blank" rel="noopener">axisbim.io</a></p>
   </div>
@@ -779,7 +881,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.15.8';
+const APP_VERSION = '1.16.3';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -969,39 +1071,71 @@ function emitBranchSegment(origin, end, radius, color, out){
 }
 
 /* ================= Data layer ================= */
-const SODA_BASE = 'https://data.cityofnewyork.us/resource/uvpi-gqnh.json';
+// v1.16.0: multi-year support. NYC ran three decadal street tree censuses — 1995, 2005, 2015 — all
+// on the same NYC Open Data (Socrata/SODA) portal. 2015 (uvpi-gqnh, already in use) and 2005
+// (29bw-z7pj) are both confirmed live with a public catalog listing and schema. 1995 is deliberately
+// NOT included yet: multiple different resource IDs exist for it across public catalogs with no way
+// to confirm from this sandbox which is canonical or whether it carries real lat/lon (vs. address-only,
+// later geocoded by a third party) — after the v1.15.6/v1.15.7/v1.15.8 OSM saga this session, shipping
+// an unverified live-data assumption isn't worth repeating. Add 1995 once its schema is confirmed
+// against a real response, not a search snippet.
+//
+// 2005's schema differs from 2015's in two small ways: no tree_id column (OBJECTID substitutes fine
+// for seeding — it's still a stable per-row integer), and no separate alive/dead status field — its
+// single `status` column carries the health value directly (Good/Fair/Poor), so it's mapped straight
+// to `health` with no status filter. Everything else (spc_common, tree_dbh, boroname, latitude,
+// longitude) is identically named across both years, confirmed via each dataset's public CSV/JSON
+// catalog export.
+const CENSUS_YEARS = {
+  2015: {
+    datasetId: 'uvpi-gqnh', idField: 'tree_id',
+    select: 'tree_id,spc_common,tree_dbh,health,boroname,latitude,longitude',
+    where: "status='Alive' AND latitude IS NOT NULL AND longitude IS NOT NULL AND tree_dbh IS NOT NULL",
+    healthField: 'health'
+  },
+  2005: {
+    datasetId: '29bw-z7pj', idField: 'objectid',
+    select: 'objectid,spc_common,tree_dbh,status,boroname,latitude,longitude',
+    where: "status IS NOT NULL AND latitude IS NOT NULL AND longitude IS NOT NULL AND tree_dbh IS NOT NULL",
+    healthField: 'status'
+  }
+};
+const DEFAULT_CENSUS_YEAR = 2015;
 // Branches now render as real tapered mesh geometry, not GL_LINES (see emitBranchSegment) — that's
 // meaningfully heavier per tree (~8 vertices + 24 indices per branch segment vs. 2 vertices before),
 // so sample sizes are pulled back down from v1.4's peak to keep total triangle count reasonable.
 const SAMPLE_LIMIT_SINGLE = 4200;      // one borough selected — denser, focused detail
 const SAMPLE_LIMIT_PER_BOROUGH = 1400; // "All" — fetched per borough in parallel, ~7k total
-let cache = {}; // borough -> raw records
+let cache = {}; // "year:borough" -> raw records
 
-function buildUrl(borough, offset, limit){
-  let where = "status='Alive' AND latitude IS NOT NULL AND longitude IS NOT NULL AND tree_dbh IS NOT NULL";
+function buildUrl(year, borough, offset, limit){
+  const cfg = CENSUS_YEARS[year];
+  let where = cfg.where;
   if(borough && borough !== 'All') where += ` AND boroname='${borough}'`;
   const params = new URLSearchParams({
-    '$select': 'tree_id,spc_common,tree_dbh,health,boroname,latitude,longitude',
+    '$select': cfg.select,
     '$where': where,
     '$limit': String(limit),
     '$offset': String(offset)
   });
-  return `${SODA_BASE}?${params.toString()}`;
+  return `https://data.cityofnewyork.us/resource/${cfg.datasetId}.json?${params.toString()}`;
 }
 
-async function fetchSample(borough, offset, limit){
-  const url = buildUrl(borough, offset, limit);
+async function fetchSample(year, borough, offset, limit){
+  const cfg = CENSUS_YEARS[year];
+  const url = buildUrl(year, borough, offset, limit);
   const res = await fetch(url);
   if(!res.ok) throw new Error('NYC Open Data request failed: ' + res.status);
   const rows = await res.json();
   return rows.map(r => ({
-    tree_id: r.tree_id,
+    tree_id: r[cfg.idField],
     species: (r.spc_common || 'unknown').trim() || 'unknown',
     dbh: parseFloat(r.tree_dbh) || 4,
-    health: r.health || 'Unknown',
+    health: r[cfg.healthField] || 'Unknown',
     borough: r.boroname,
     lat: parseFloat(r.latitude),
-    lon: parseFloat(r.longitude)
+    lon: parseFloat(r.longitude),
+    censusYear: year
   })).filter(r => isFinite(r.lat) && isFinite(r.lon));
 }
 
@@ -1016,19 +1150,19 @@ async function fetchSample(borough, offset, limit){
    — that's why Manhattan was rendering empty. Capped low enough to stay safely inside every borough's
    real count, plus a retry-at-offset-0 fallback in case any borough is smaller than expected. */
 const SAFE_MAX_OFFSET = 30000;
-async function fetchSampleSafe(borough, limit){
-  let rows = await fetchSample(borough, Math.floor(Math.random() * SAFE_MAX_OFFSET), limit);
-  if(!rows.length) rows = await fetchSample(borough, 0, limit); // guaranteed non-empty if the borough has any rows at all
+async function fetchSampleSafe(year, borough, limit){
+  let rows = await fetchSample(year, borough, Math.floor(Math.random() * SAFE_MAX_OFFSET), limit);
+  if(!rows.length) rows = await fetchSample(year, borough, 0, limit); // guaranteed non-empty if the borough has any rows at all
   return rows;
 }
-async function fetchAllBoroughsEvenly(){
+async function fetchAllBoroughsEvenly(year){
   const boroughs = Object.keys(BOROUGH_BOUNDS_APPROX);
-  const chunks = await Promise.all(boroughs.map(b => fetchSampleSafe(b, SAMPLE_LIMIT_PER_BOROUGH)));
+  const chunks = await Promise.all(boroughs.map(b => fetchSampleSafe(year, b, SAMPLE_LIMIT_PER_BOROUGH)));
   return chunks.flat();
 }
 
 /* Synthetic offline fallback — used only if the live fetch fails (blocked network, CORS, etc). */
-function syntheticSample(borough){
+function syntheticSample(borough, year){
   const boroughBounds = BOROUGH_BOUNDS_APPROX;
   const species = ['London planetree','Callery pear','Honeylocust','Pin oak','Norway maple','Japanese zelkova','Ginkgo','Little-leaf linden'];
   const healths = ['Good','Good','Good','Fair','Fair','Poor'];
@@ -1046,7 +1180,8 @@ function syntheticSample(borough){
         health: healths[Math.floor(rng()*healths.length)],
         borough: b,
         lat: bb.lat[0] + rng()*(bb.lat[1]-bb.lat[0]),
-        lon: bb.lon[0] + rng()*(bb.lon[1]-bb.lon[0])
+        lon: bb.lon[0] + rng()*(bb.lon[1]-bb.lon[0]),
+        censusYear: year
       });
     }
   });
@@ -2182,7 +2317,7 @@ function showTreeInfo(rec, clientX, clientY){
   const wrapRect = wrap.getBoundingClientRect();
   let x = clientX - wrapRect.left + 14, y = clientY - wrapRect.top + 14;
   x = Math.min(x, Math.max(8, wrapRect.width - 238));
-  y = Math.min(y, Math.max(8, wrapRect.height - 150));
+  y = Math.min(y, Math.max(8, wrapRect.height - 170));
   card.style.left = x + 'px';
   card.style.top = y + 'px';
   card.innerHTML = `
@@ -2192,6 +2327,7 @@ function showTreeInfo(rec, clientX, clientY){
     <div class="ti-row"><span>Health</span><span>${escapeHtml(rec.health)}</span></div>
     <div class="ti-row"><span>Borough</span><span>${escapeHtml(rec.borough || '—')}</span></div>
     <div class="ti-row"><span>Tree ID</span><span>${escapeHtml(String(rec.tree_id))}</span></div>
+    <div class="ti-row"><span>Census</span><span>${escapeHtml(String(rec.censusYear || DEFAULT_CENSUS_YEAR))}</span></div>
   `;
   card.classList.add('show');
   document.getElementById('tiClose').addEventListener('click', hideTreeInfo);
@@ -2332,9 +2468,85 @@ function rebuildForest(records){
   renderLegend();
 }
 
+// v1.16.1: standalone twin of rebuildForest's geometry-building step, for the growth-transition
+// feature. Deliberately NOT a refactor of rebuildForest itself — several audit checks pattern-match
+// rebuildForest's exact structure (the hideTreeInfo() opener, the forestLines/forestPoints/
+// forestPointsFar dispose sequence, the scene.add(forestLines);\nupdateBranchVisibility(); pairing),
+// and touching that risks regressing 215 passing checks for a purely internal reuse benefit. This
+// builds the same three meshes but returns them instead of touching the forestLines/forestPoints/
+// forestPointsFar globals or the scene — the caller (growToYear) owns adding/removing/disposing them,
+// since a transition briefly needs TWO complete layers alive in the scene at once (old fading out,
+// new fading in), which rebuildForest's single-layer tear-down-then-rebuild model can't represent.
+function buildForestLayer(records){
+  const topSet = colorMode === 'species' ? topSpeciesSet(records) : null;
+  const visibleRecords = records.filter(rec => !isCategoryHidden(rec, topSet) && !isSizeHidden(rec));
+
+  const out = {
+    branchPos:[], branchCol:[], branchIdx:[],
+    pointPos:[], pointCol:[], pointSize:[], pointRecordRef:[],
+    colorMode, topSpeciesSet: topSet, season: selectedSeason
+  };
+  visibleRecords.forEach(rec=>{
+    const p = project(rec.lat, rec.lon);
+    growTree({...rec, x:p.x, z:p.z}, out);
+  });
+
+  const branchGeo = new THREE.BufferGeometry();
+  branchGeo.setAttribute('position', new THREE.Float32BufferAttribute(out.branchPos, 3));
+  branchGeo.setAttribute('color', new THREE.Float32BufferAttribute(out.branchCol, 3));
+  branchGeo.setIndex(new THREE.Uint32BufferAttribute(out.branchIdx, 1));
+  const branchMat = new THREE.MeshBasicMaterial({vertexColors:true, side:THREE.DoubleSide, transparent:true, opacity:0.68, fog:false});
+  const lines = new THREE.Mesh(branchGeo, branchMat);
+  lines.renderOrder = 4;
+
+  const ptGeo = new THREE.BufferGeometry();
+  ptGeo.setAttribute('position', new THREE.Float32BufferAttribute(out.pointPos, 3));
+  ptGeo.setAttribute('color', new THREE.Float32BufferAttribute(out.pointCol, 3));
+  const ptMat = new THREE.PointsMaterial({
+    size:5.2, map:getDotTexture(), vertexColors:true, sizeAttenuation:true,
+    transparent:true, opacity:0.95, depthWrite:false, fog:false
+  });
+  const points = new THREE.Points(ptGeo, ptMat);
+  points.renderOrder = 5;
+
+  const farPos = [], farCol = [], farSize = [], farRefs = [];
+  const pointCount = out.pointSize.length;
+  for(let i=0;i<pointCount;i++){
+    if(i % CANOPY_FAR_STRIDE === 0){
+      farPos.push(out.pointPos[i*3], out.pointPos[i*3+1], out.pointPos[i*3+2]);
+      farCol.push(out.pointCol[i*3], out.pointCol[i*3+1], out.pointCol[i*3+2]);
+      farSize.push(out.pointSize[i] * CANOPY_FAR_SIZE_MULT);
+      farRefs.push(out.pointRecordRef[i]);
+    }
+  }
+  const ptGeoFar = new THREE.BufferGeometry();
+  ptGeoFar.setAttribute('position', new THREE.Float32BufferAttribute(farPos, 3));
+  ptGeoFar.setAttribute('color', new THREE.Float32BufferAttribute(farCol, 3));
+  const ptMatFar = new THREE.PointsMaterial({
+    size:8.5, map:getCrispDotTexture(), vertexColors:true, sizeAttenuation:true,
+    transparent:true, opacity:1.0, alphaTest:0.45, depthWrite:true, fog:false
+  });
+  const pointsFar = new THREE.Points(ptGeoFar, ptMatFar);
+  pointsFar.renderOrder = 5;
+
+  return {
+    lines, points, pointsFar,
+    pointRecordRef: out.pointRecordRef, pointRecordRefFar: farRefs,
+    visibleCount: visibleRecords.length, totalCount: records.length
+  };
+}
+function disposeForestLayer(layer){
+  [layer.lines, layer.points, layer.pointsFar].forEach(obj=>{
+    scene.remove(obj);
+    obj.geometry.dispose();
+    obj.material.dispose();
+  });
+}
+
 /* ================= UI: borough + color mode + legend ================= */
 const BOROUGHS = ['All','Manhattan','Brooklyn','Queens','Bronx','Staten Island'];
 let activeBorough = 'All';
+let activeYear = DEFAULT_CENSUS_YEAR;
 
 function renderBoroughRow(){
   const row = document.getElementById('boroughRow');
@@ -2343,6 +2555,16 @@ function renderBoroughRow(){
   ).join('');
   row.querySelectorAll('button').forEach(btn=>{
     btn.addEventListener('click', ()=> selectBorough(btn.dataset.borough));
+  });
+}
+function renderYearRow(){
+  const row = document.getElementById('yearRow');
+  const years = Object.keys(CENSUS_YEARS).map(Number).sort((a,b)=>a-b);
+  row.innerHTML = years.map(y =>
+    `<button class="btn secondary${y===activeYear?' active':''}" data-year="${y}" title="Switch to the ${y} Street Tree Census">${y}</button>`
+  ).join('');
+  row.querySelectorAll('button').forEach(btn=>{
+    btn.addEventListener('click', ()=> selectYear(Number(btn.dataset.year)));
   });
 }
 function renderColorModeRow(){
@@ -2479,6 +2701,129 @@ async function selectBorough(b){
   await loadAndRender(b, true);
 }
 
+async function selectYear(y){
+  await growToYear(y);
+}
+
+// v1.16.1: like ensureYearCached below it, this mirrors part of loadAndRender's try/catch (fetch,
+// fall back to synthetic on failure) but returns records instead of rendering them — growToYear
+// needs the target year's records in hand *before* it starts animating, not rendered immediately.
+async function ensureYearCached(year, borough){
+  const key = year + ':' + borough;
+  if(cache[key]) return cache[key];
+  try{
+    const rows = borough === 'All'
+      ? await fetchAllBoroughsEvenly(year)
+      : await fetchSampleSafe(year, borough, SAMPLE_LIMIT_SINGLE);
+    if(!rows.length) throw new Error('empty response');
+    cache[key] = rows;
+    return rows;
+  } catch(err){
+    console.warn('STAND: live fetch failed during growth transition, using offline sample —', err.message);
+    const rows = syntheticSample(borough, year);
+    cache[key] = rows;
+    return rows;
+  }
+}
+
+let growing = false;
+const GROW_DURATION_MS = 6500; // v1.16.2: was 3200 — direct feedback that it read as a blink, not a transition
+// Crossfades from whatever's currently rendered to targetYear's census. Deliberately animates
+// opacity + canopy point *size* (not position/scale) — scaling a Points/Mesh object scales around
+// its own local origin, and since these meshes bake real world-space coordinates straight into their
+// vertex buffers (not offset from a centered origin), a uniform scale transform would drag every tree
+// toward/away from world (0,0,0) instead of growing each tree in place. Point size is a pure material
+// scalar with no such side effect, so ramping it up alongside opacity reads as canopy "sprouting in"
+// without any of the trees visibly sliding across the map.
+async function growToYear(targetYear){
+  if(growing || targetYear === activeYear) return;
+  if(!forestLines || !forestPoints || !forestPointsFar){
+    // Nothing rendered yet (first load ever) — there's no old layer to crossfade from, so just do a
+    // normal instant load instead of animating from nothing.
+    activeYear = targetYear;
+    renderYearRow();
+    await loadAndRender(activeBorough, true);
+    return;
+  }
+  growing = true;
+  document.getElementById('controlPanel').classList.add('growing');
+  const fromYear = activeYear;
+  activeYear = targetYear;
+  renderYearRow();
+
+  const key = targetYear + ':' + activeBorough;
+  const needsFetch = !cache[key];
+  if(needsFetch) setLoading(true, `Fetching the ${targetYear} census…`);
+  let toRecords;
+  try{
+    toRecords = await ensureYearCached(targetYear, activeBorough);
+  } finally {
+    if(needsFetch) setLoading(false);
+  }
+
+  const oldLayer = {lines: forestLines, points: forestPoints, pointsFar: forestPointsFar};
+  const newLayer = buildForestLayer(toRecords);
+  const newBaseOpacity = {lines: newLayer.lines.material.opacity, points: newLayer.points.material.opacity, pointsFar: newLayer.pointsFar.material.opacity};
+  const newBaseSize = {points: newLayer.points.material.size, pointsFar: newLayer.pointsFar.material.size};
+  newLayer.lines.material.opacity = 0;
+  newLayer.points.material.opacity = 0; newLayer.points.material.size = newBaseSize.points * 0.15;
+  newLayer.pointsFar.material.opacity = 0; newLayer.pointsFar.material.size = newBaseSize.pointsFar * 0.15;
+  scene.add(newLayer.lines, newLayer.points, newLayer.pointsFar);
+  const oldBaseOpacity = {lines: oldLayer.lines.material.opacity, points: oldLayer.points.material.opacity, pointsFar: oldLayer.pointsFar.material.opacity};
+
+  await new Promise(resolve=>{
+    const t0 = performance.now();
+    function step(now){
+      const t = Math.min(1, (now - t0) / GROW_DURATION_MS);
+      const e = t < 0.5 ? 2*t*t : 1 - Math.pow(-2*t + 2, 2) / 2; // ease-in-out-quad
+      oldLayer.lines.material.opacity = oldBaseOpacity.lines * (1 - e);
+      oldLayer.points.material.opacity = oldBaseOpacity.points * (1 - e);
+      oldLayer.pointsFar.material.opacity = oldBaseOpacity.pointsFar * (1 - e);
+      newLayer.lines.material.opacity = newBaseOpacity.lines * e;
+      newLayer.points.material.opacity = newBaseOpacity.points * e;
+      newLayer.points.material.size = newBaseSize.points * (0.15 + 0.85 * e);
+      newLayer.pointsFar.material.opacity = newBaseOpacity.pointsFar * e;
+      newLayer.pointsFar.material.size = newBaseSize.pointsFar * (0.15 + 0.85 * e);
+      if(t < 1){ requestAnimationFrame(step); } else { resolve(); }
+    }
+    requestAnimationFrame(step);
+  });
+
+  disposeForestLayer(oldLayer);
+  forestLines = newLayer.lines; forestPoints = newLayer.points; forestPointsFar = newLayer.pointsFar;
+  pointRecordRefs = newLayer.pointRecordRef; pointRecordRefsFar = newLayer.pointRecordRefFar;
+  // Snap back to the exact baseline values — the eased interpolation above lands at e≈1 but not
+  // always exactly 1.0, and float drift here would leave the canopy a hair dimmer/smaller than normal.
+  forestLines.material.opacity = newBaseOpacity.lines;
+  forestPoints.material.opacity = newBaseOpacity.points; forestPoints.material.size = newBaseSize.points;
+  forestPointsFar.material.opacity = newBaseOpacity.pointsFar; forestPointsFar.material.size = newBaseSize.pointsFar;
+  updateBranchVisibility();
+  updateCanopyLOD();
+  currentRecords = toRecords;
+  document.getElementById('statLine').innerHTML = newLayer.visibleCount < newLayer.totalCount
+    ? `<b>${newLayer.visibleCount.toLocaleString()}</b> of <b>${newLayer.totalCount.toLocaleString()}</b> trees shown`
+    : `<b>${newLayer.totalCount.toLocaleString()}</b> trees loaded`;
+  renderLegend();
+
+  growing = false;
+  document.getElementById('controlPanel').classList.remove('growing');
+  toast(`Grew from the ${fromYear} to the ${targetYear} census — ${toRecords.length.toLocaleString()} records`);
+}
+
+// Dedicated "Watch it grow" button: always plays the full 2005 → 2015 arc, resetting to 2005 first
+// (instant, not animated — there's nothing meaningful to crossfade from on the very first click) if
+// the current year isn't already 2005.
+async function playGrowth(){
+  if(growing) return;
+  if(activeYear !== 2005){
+    activeYear = 2005;
+    renderYearRow();
+    await loadAndRender(activeBorough, true);
+  }
+  await growToYear(2015);
+}
+document.getElementById('growBtn').addEventListener('click', playGrowth);
+
 function setLoading(on, text){
   const ov = document.getElementById('loadingOverlay');
   if(text) document.getElementById('loadingText').textContent = text;
@@ -2486,27 +2831,27 @@ function setLoading(on, text){
 }
 
 async function loadAndRender(borough, forceRefetch){
-  const key = borough;
+  const key = activeYear + ':' + borough;
   if(!forceRefetch && cache[key]){
     currentRecords = cache[key];
     rebuildForest(currentRecords);
     return;
   }
   setLoading(true, borough === 'All'
-    ? 'Fetching a live sample from all five boroughs…'
-    : `Fetching a live ${borough} sample from NYC Open Data…`);
+    ? `Fetching a live ${activeYear} sample from all five boroughs…`
+    : `Fetching a live ${activeYear} ${borough} sample from NYC Open Data…`);
   try{
     const rows = borough === 'All'
-      ? await fetchAllBoroughsEvenly()
-      : await fetchSampleSafe(borough, SAMPLE_LIMIT_SINGLE);
+      ? await fetchAllBoroughsEvenly(activeYear)
+      : await fetchSampleSafe(activeYear, borough, SAMPLE_LIMIT_SINGLE);
     if(!rows.length) throw new Error('empty response');
     cache[key] = rows;
     currentRecords = rows;
     rebuildForest(rows);
-    toast(`Loaded ${rows.length.toLocaleString()} live records`);
+    toast(`Loaded ${rows.length.toLocaleString()} live records — ${activeYear} census`);
   } catch(err){
     console.warn('STAND: live fetch failed, using offline sample —', err.message);
-    const rows = syntheticSample(borough);
+    const rows = syntheticSample(borough, activeYear);
     cache[key] = rows;
     currentRecords = rows;
     rebuildForest(rows);
@@ -2559,8 +2904,9 @@ if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribu
 (function boot(){
   applyThemeChrome();
   document.getElementById('footVersion').innerHTML =
-    `STAND · v${APP_VERSION} · Joe.K · <a href="https://axisbim.io" target="_blank" rel="noopener">axisbim.io</a> · data: NYC Open Data, 2015 Street Tree Census`;
+    `STAND · v${APP_VERSION} · Joe.K · <a href="https://axisbim.io" target="_blank" rel="noopener">axisbim.io</a> · data: NYC Open Data, Street Tree Census (2005 & 2015)`;
   renderBoroughRow();
+  renderYearRow();
   renderColorModeRow();
   renderSizeRow();
   renderViewModeRow();
