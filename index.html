@@ -5,6 +5,27 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.4 - 2026-07-11 - Real coastline via OSM, take two — this time verified against the live
+    Overpass endpoint through Claude in Chrome against the actual deployed site
+    (nycstreettrees.netlify.app), not blind. Two real bugs found and fixed that v1.15.6/v1.15.7 could
+    not have caught without that access: (1) NAME COLLISIONS ACROSS STATES — the original query
+    filtered only by name + admin_level with no geographic scope; live testing turned up three
+    different relations named "Essex County" in one response (NJ, NY, elsewhere), silently returning
+    whichever OSM listed first. Fixed with a global [bbox:...] setting on the query (the same
+    CONTEXT_CLIP_BOX bounds already used elsewhere) — verified live: without it, duplicate "Essex
+    County" entries came back; with it, exactly 8 relations, one per name, zero collisions. (2)
+    INTERMITTENT NON-JSON RESPONSES — roughly 2 in 5 live attempts against the public Overpass
+    instance returned an HTTP 200 whose body was an XML error/rate-limit page instead of JSON.
+    res.ok is true in this case, so only JSON.parse throwing catches it; added up to 3 retries with a
+    short delay before falling back, rather than giving up on the first bad response. Verified beyond
+    just "the query runs": ran the actual ring-stitcher against real live data (all 8 counties
+    resolved to clean, fully-closed rings, zero missing ways/nodes, zero leftover fragments — Hudson
+    County correctly produced 3 separate outer rings, real island/coastline complexity, not a stitch
+    failure), rendered a raw-coordinate overlay directly into the live scene (traced an actual river
+    channel along the Hudson, distinctly narrower than the county-file fill's edge), and finally ran
+    the real buildContextGeometry pipeline against the live data and screenshotted the actual
+    rendered fill — confirmed it hugs the real riverbank instead of the old wedge. All three loaders
+    still fall back to the v1.15.4 county-file path on any failure, unchanged from before.
   v1.16.3 - 2026-07-11 - Direct feedback: the UI read as dated/"Windows 95." Root cause wasn't the
     sharp corners (zero border-radius is deliberate brand language across the whole tool suite) — it
     was that .btn had no :hover rule and no transition property at all, so every state change was an
@@ -881,7 +902,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.3';
+const APP_VERSION = '1.16.4';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1434,10 +1455,173 @@ function clipGeometryToBox(geom, box){
 // entries above) if real coastline data is worth revisiting later — ideally with actual browser
 // console access to close the loop next time.
 
-// v1.15.4: all three context regions now share one fetch of the nationwide county file — a single
-// promise memoized at module scope so NJ, Westchester, and Long Island's loaders (which all run
-// concurrently at boot) trigger exactly one network request between them, not three, and all filter
-// off the same in-memory feature list so their shared river/sound edges are guaranteed consistent.
+// v1.16.4: real coastline via OSM, take two — this time verified against the live Overpass endpoint
+// through Claude in Chrome against the actual deployed site (nycstreettrees.netlify.app), not blind.
+// Two real bugs found and fixed that v1.15.6/v1.15.7 could not have caught without that access:
+//
+// 1. NAME COLLISIONS ACROSS STATES. The original query filtered only by name + admin_level, no
+//    geographic scope. Live testing turned up THREE different relations named "Essex County" in a
+//    single response (NJ, NY, and elsewhere) — the query had no way to know which one was wanted, so
+//    it silently returned whichever OSM happened to include first. Fixed with a global [bbox:...]
+//    setting (south,west,north,east — the same CONTEXT_CLIP_BOX bounds already used to clip county-
+//    file geometry) added to the Overpass query header itself, which restricts every relation match
+//    to ones whose bounding box intersects the NYC area. Verified live: without the bbox, an 8-county
+//    query returned duplicate "Essex County" entries; with it, exactly 8 relations came back, one per
+//    name, zero collisions.
+//
+// 2. INTERMITTENT NON-JSON ERROR RESPONSES. Running the same query repeatedly against the live public
+//    Overpass instance, roughly 2 in 5 attempts returned an HTTP 200 whose body was an XML error page
+//    instead of the requested JSON — apparently soft rate-limiting/load-shedding on Overpass's shared
+//    public server, not anything wrong with the query. res.ok is true in this case (status 200), so
+//    the original code's `if(!res.ok) throw` wouldn't have caught it — only `JSON.parse` throwing on
+//    the XML would, which the outer try/catch already handled by falling back to county data. Still,
+//    a ~40% first-attempt failure rate is worth retrying before giving up rather than immediately
+//    falling back — added up to 3 attempts with a short delay between them.
+//
+// Everything else (per-county query instead of whole-state, ring-stitching by OSM node id) is
+// unchanged from v1.15.7/v1.15.6 and was re-validated against real data before being restored here:
+// all 8 counties resolved to clean, fully-closed rings with zero missing ways/nodes and zero leftover
+// fragments (Hudson County correctly produced 3 separate outer rings — real islands/coastline
+// complexity, not a stitching failure). A raw-coordinate overlay rendered directly into the live scene
+// showed the OSM boundary tracing an actual river channel along the Hudson, distinctly narrower and
+// more detailed than the county-file fill's edge — the improvement this was always meant to deliver.
+const OSM_OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+const OSM_CONTEXT_CACHE_KEY = 'stand_osm_context_v2'; // v2: v1 (pre-bbox-fix) could contain the wrong Essex County
+const OSM_FETCH_RETRIES = 3;
+const OSM_RETRY_DELAY_MS = 1200;
+function buildOsmAdminQuery(){
+  const b = CONTEXT_CLIP_BOX;
+  return `[out:json][timeout:25][bbox:${b.latMin},${b.lonMin},${b.latMax},${b.lonMax}];
+(
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Hudson County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Bergen County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Essex County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Union County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Passaic County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Westchester County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Nassau County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Suffolk County"];
+);
+out body;
+>;
+out skel qt;`;
+}
+
+// Connects an unordered set of way segments (each a chain of shared OSM node ids) into closed rings.
+// Boundary relations store their coastline as many short ways, not one closed loop — this is the same
+// "stitch fragments into a ring" problem buildContextGeometry's dissolve already solves for county
+// seams below, just working from OSM node-id continuity instead of county-to-county edge matching.
+// Verified standalone against synthetic scrambled/reversed segments and a dangling never-closes chain
+// before ever touching real data, then re-verified against real live Overpass responses above.
+function stitchWaysIntoRings(wayList){
+  const remaining = wayList.map(w => ({nodeIds: w.nodeIds.slice(), coords: w.coords.slice()}));
+  const rings = [];
+  while(remaining.length){
+    let cur = remaining.shift();
+    let nodeChain = cur.nodeIds, coordChain = cur.coords;
+    let closed = nodeChain.length > 1 && nodeChain[0] === nodeChain[nodeChain.length-1];
+    let progress = true;
+    while(!closed && progress){
+      progress = false;
+      for(let i=0;i<remaining.length;i++){
+        const w = remaining[i];
+        const wStart = w.nodeIds[0], wEnd = w.nodeIds[w.nodeIds.length-1];
+        const chainStart = nodeChain[0], chainEnd = nodeChain[nodeChain.length-1];
+        if(wStart === chainEnd){
+          nodeChain = nodeChain.concat(w.nodeIds.slice(1));
+          coordChain = coordChain.concat(w.coords.slice(1));
+        } else if(wEnd === chainEnd){
+          nodeChain = nodeChain.concat(w.nodeIds.slice(0,-1).reverse());
+          coordChain = coordChain.concat(w.coords.slice(0,-1).reverse());
+        } else if(wEnd === chainStart){
+          nodeChain = w.nodeIds.slice(0,-1).concat(nodeChain);
+          coordChain = w.coords.slice(0,-1).concat(coordChain);
+        } else if(wStart === chainStart){
+          nodeChain = w.nodeIds.slice(1).reverse().concat(nodeChain);
+          coordChain = w.coords.slice(1).reverse().concat(coordChain);
+        } else {
+          continue;
+        }
+        remaining.splice(i,1); progress = true; break;
+      }
+      closed = nodeChain.length > 2 && nodeChain[0] === nodeChain[nodeChain.length-1];
+    }
+    // Incomplete chains (dangling boundary pieces that never closed) are dropped rather than drawn
+    // as an invalid open shape — better to be missing a minor fragment than render a broken polygon.
+    if(closed && coordChain.length >= 4) rings.push(coordChain);
+  }
+  return rings;
+}
+
+// Converts raw Overpass JSON (a flat list of nodes/ways/relations) into GeoJSON-like Feature objects
+// buildContextGeometry can consume directly — same {properties, geometry} shape the county-file path
+// already produces, so no downstream code needs to know which source a feature came from.
+function osmElementsToFeatures(elements){
+  const nodes = {}, ways = {};
+  elements.forEach(el => {
+    if(el.type === 'node') nodes[el.id] = [el.lon, el.lat];
+    else if(el.type === 'way') ways[el.id] = el;
+  });
+  const features = [];
+  elements.filter(el => el.type === 'relation').forEach(rel => {
+    const name = rel.tags && rel.tags.name;
+    if(!name) return;
+    const outerWays = [], innerWays = [];
+    (rel.members || []).forEach(m => {
+      if(m.type !== 'way') return;
+      const way = ways[m.ref];
+      if(!way || !way.nodes) return;
+      const coords = way.nodes.map(id => nodes[id]).filter(Boolean);
+      if(coords.length < 2 || coords.length !== way.nodes.length) return; // any missing node → skip, don't guess
+      const target = m.role === 'inner' ? innerWays : outerWays;
+      target.push({nodeIds: way.nodes, coords});
+    });
+    const outerRings = stitchWaysIntoRings(outerWays);
+    const innerRings = stitchWaysIntoRings(innerWays);
+    if(!outerRings.length) return;
+    const geometry = outerRings.length === 1
+      ? {type:'Polygon', coordinates:[outerRings[0], ...innerRings]}
+      : {type:'MultiPolygon', coordinates: outerRings.map((r,i) => i===0 ? [r, ...innerRings] : [r])};
+    features.push({properties:{name}, geometry});
+  });
+  return features;
+}
+
+let osmContextPromise = null;
+function loadOsmContext(){
+  if(osmContextPromise) return osmContextPromise;
+  osmContextPromise = (async () => {
+    const cached = localStorage.getItem(OSM_CONTEXT_CACHE_KEY);
+    if(cached) return JSON.parse(cached);
+    let lastErr = null;
+    for(let attempt = 0; attempt < OSM_FETCH_RETRIES; attempt++){
+      try{
+        const res = await fetch(OSM_OVERPASS_URL, {method:'POST', body: buildOsmAdminQuery()});
+        if(!res.ok) throw new Error('Overpass request failed: ' + res.status);
+        // Overpass can return HTTP 200 with an XML error/rate-limit page instead of the requested
+        // JSON — observed live, roughly 2-in-5 attempts on the public instance. res.ok alone can't
+        // catch this; only the JSON.parse below can, which is exactly why this is retried rather
+        // than treated as a hard failure on the first bad response.
+        const data = JSON.parse(await res.text());
+        const features = osmElementsToFeatures(data.elements || []);
+        if(!features.length) throw new Error('no usable relations in Overpass response');
+        try{ localStorage.setItem(OSM_CONTEXT_CACHE_KEY, JSON.stringify(features)); }
+        catch(e){ /* storage full or unavailable — non-fatal, just means next load re-fetches */ }
+        return features;
+      } catch(err){
+        lastErr = err;
+        if(attempt < OSM_FETCH_RETRIES - 1) await new Promise(r => setTimeout(r, OSM_RETRY_DELAY_MS));
+      }
+    }
+    throw lastErr;
+  })();
+  return osmContextPromise;
+}
+
+
+// v1.15.4: all three context regions also share one fetch of the nationwide county file for the
+// fallback path — a single promise memoized at module scope so NJ, Westchester, and Long Island's
+// loaders trigger exactly one fallback network request between them, not three.
 let contextCountiesPromise = null;
 function loadContextCounties(){
   if(contextCountiesPromise) return contextCountiesPromise;
@@ -1457,7 +1641,16 @@ function loadContextCounties(){
   return contextCountiesPromise;
 }
 
+const NJ_OSM_COUNTIES = ['Hudson County', 'Bergen County', 'Essex County', 'Union County', 'Passaic County'];
 async function loadStateContext(){
+  try{
+    const osmFeatures = (await loadOsmContext()).filter(f => NJ_OSM_COUNTIES.includes(f.properties.name));
+    if(!osmFeatures.length) throw new Error('NJ county relations not found in Overpass result');
+    buildContextGeometry(osmFeatures, () => 'New Jersey'); // merge all five counties under one label
+    return;
+  } catch(err){
+    console.warn('STAND: OSM context fetch failed for New Jersey, falling back to county data —', err.message);
+  }
   try{
     const features = (await loadContextCounties())
       .filter(f => f.properties.STATE === NJ_STATE_FIPS);
@@ -1468,7 +1661,7 @@ async function loadStateContext(){
     // there's no separate lower-resolution outline source to fetch anymore.
     buildContextGeometry(features, () => 'New Jersey');
   } catch(err){
-    console.warn('STAND: NJ context fetch failed (New Jersey omitted) —', err.message);
+    console.warn('STAND: NJ context fetch failed entirely (New Jersey omitted) —', err.message);
   }
 }
 
@@ -1476,24 +1669,41 @@ async function loadStateContext(){
 // the portion near NYC (western Nassau, a bit of Suffolk) is shown, kept proportionate to the frame.
 async function loadLongIslandContext(){
   try{
+    const osmFeatures = (await loadOsmContext())
+      .filter(f => f.properties.name === 'Nassau County' || f.properties.name === 'Suffolk County');
+    if(!osmFeatures.length) throw new Error('Nassau/Suffolk relations not found in Overpass result');
+    buildContextGeometry(osmFeatures, () => 'Long Island');
+    return;
+  } catch(err){
+    console.warn('STAND: OSM context fetch failed for Long Island, falling back to county data —', err.message);
+  }
+  try{
     const features = (await loadContextCounties())
       .filter(f => f.properties.STATE === NY_STATE_FIPS && LONG_ISLAND_COUNTIES.includes(f.properties.NAME));
     if(!features.length) throw new Error('no matching county features in response');
     buildContextGeometry(features, () => 'Long Island'); // merge both counties under one label
   } catch(err){
-    console.warn('STAND: Long Island context fetch failed (outline omitted) —', err.message);
+    console.warn('STAND: Long Island context fetch failed entirely (outline omitted) —', err.message);
   }
 }
 
 // v1.15.3: third context landmass — Westchester County, directly north of the Bronx.
 async function loadWestchesterContext(){
   try{
+    const osmFeatures = (await loadOsmContext()).filter(f => f.properties.name === 'Westchester County');
+    if(!osmFeatures.length) throw new Error('Westchester relation not found in Overpass result');
+    buildContextGeometry(osmFeatures, () => 'Westchester');
+    return;
+  } catch(err){
+    console.warn('STAND: OSM context fetch failed for Westchester, falling back to county data —', err.message);
+  }
+  try{
     const features = (await loadContextCounties())
       .filter(f => f.properties.STATE === NY_STATE_FIPS && WESTCHESTER_COUNTIES.includes(f.properties.NAME));
     if(!features.length) throw new Error('no matching county features in response');
     buildContextGeometry(features, () => 'Westchester');
   } catch(err){
-    console.warn('STAND: Westchester context fetch failed (outline omitted) —', err.message);
+    console.warn('STAND: Westchester context fetch failed entirely (outline omitted) —', err.message);
   }
 }
 
