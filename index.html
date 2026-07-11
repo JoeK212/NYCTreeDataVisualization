@@ -5,6 +5,26 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.12 - 2026-07-11 - Critical regression from v1.16.11, reported directly: all five NYC boroughs
+    rendered as open water (only the independent tree-canopy points still visible), while NJ/
+    Westchester/Long Island stayed correct. Not a camera issue — confirmed after Recenter didn't fix
+    it, and reproduced on the actual live deployed site, not just locally. Root cause: v1.16.11 added
+    a new function named decimateRing(ring, targetPoints) for the Hudson NHD polygon — but the file
+    already had a decimateRing(ring, epsilon) at line ~1399 (RDP-based simplification, used by every
+    borough's coastline loading via decimateGeometry). JavaScript silently lets a later function
+    declaration overwrite an earlier one in the same scope; the new one replaced the original entirely.
+    Every borough boundary call — decimateRing(r, SIMPLIFY_TOLERANCE_DEG), i.e. decimateRing(r,
+    0.00025) — started running through the new function instead, which treats its second argument as
+    a target point count, not a distance tolerance: stride = Math.ceil(ring.length / 0.00025) is a
+    stride in the millions, collapsing every borough ring to a single point. Confirmed live, directly:
+    called decimateRing on the actual deployed site with a known 4-corner test ring and watched it
+    collapse to one point; NJ/Westchester/Long Island don't route through decimateRing at all, which is
+    why only the boroughs were affected. Fixed by renaming the new function decimateRingByStride (its
+    behavior and every call site are unchanged) so it no longer collides with the original. Verified by
+    applying the exact fix live, rebuilding the actual borough geometry, and pixel-sampling a small grid
+    over all five boroughs (0% water readings across the board, versus the broken baseline) before
+    writing this fix to the file. Also swept the whole file for any other duplicate function
+    declarations this session might have introduced — none found.
   v1.16.11 - 2026-07-11 - Direct feedback: the v1.16.10 patch worked but looked like a straight-edged
     rectangle, not a river — reasonable, since it was a hand-picked shape, not real data. Replaced it
     with the actual Hudson River water polygon, sourced live from the USGS National Hydrography Dataset
@@ -1007,7 +1027,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.11';
+const APP_VERSION = '1.16.12';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1581,7 +1601,18 @@ const NHD_HUDSON_CACHE_KEY = 'stand_nhd_hudson_v1';
 const NHD_OUTER_RING_TARGET_POINTS = 1200;
 const NHD_HOLE_MIN_POINTS = 15; // holes with fewer points than this are tiny islands, dropped as visually insignificant
 const NHD_HOLE_TARGET_POINTS = 80;
-function decimateRing(ring, targetPoints){
+// v1.16.12: named decimateRingByStride, not decimateRing — the file already had a decimateRing(ring,
+// epsilon) at line ~1399 (RDP simplification, used by every borough's coastline loading via
+// decimateGeometry). This function's original name collided with it: JS silently lets a later function
+// declaration overwrite an earlier one in the same scope, so this replaced the borough one entirely.
+// Every borough boundary call — decimateRing(r, SIMPLIFY_TOLERANCE_DEG), i.e. decimateRing(r, 0.00025)
+// — started running through THIS function instead, which treats its second argument as a target POINT
+// COUNT, not a distance tolerance: stride = Math.ceil(ring.length / 0.00025) is a stride in the
+// millions, collapsing every borough ring to a single point. Confirmed live on the deployed site: all
+// five boroughs' land fill vanished (water plane showing through, only the independent tree-canopy
+// points still rendering), while NJ/Westchester/Long Island — which don't go through decimateRing at
+// all — stayed correct. Renamed to remove the collision; behavior and every call site are unchanged.
+function decimateRingByStride(ring, targetPoints){
   if(ring.length <= targetPoints) return ring;
   const stride = Math.ceil(ring.length / targetPoints);
   const out = [];
@@ -1591,10 +1622,10 @@ function decimateRing(ring, targetPoints){
   return out;
 }
 function decimateHudsonPolygon(rawRings){
-  const decimated = [decimateRing(rawRings[0], NHD_OUTER_RING_TARGET_POINTS)];
+  const decimated = [decimateRingByStride(rawRings[0], NHD_OUTER_RING_TARGET_POINTS)];
   for(let i=1;i<rawRings.length;i++){
     if(rawRings[i].length < NHD_HOLE_MIN_POINTS) continue;
-    decimated.push(decimateRing(rawRings[i], NHD_HOLE_TARGET_POINTS));
+    decimated.push(decimateRingByStride(rawRings[i], NHD_HOLE_TARGET_POINTS));
   }
   return decimated;
 }
