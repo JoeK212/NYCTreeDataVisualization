@@ -5,6 +5,26 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.11 - 2026-07-11 - Direct feedback: the v1.16.10 patch worked but looked like a straight-edged
+    rectangle, not a river — reasonable, since it was a hand-picked shape, not real data. Replaced it
+    with the actual Hudson River water polygon, sourced live from the USGS National Hydrography Dataset
+    (hydro.nationalmap.gov) instead of guessed coordinates. Considered rebuilding around a real map
+    basemap first (per a reference site, jillhubley.com/project/nyctrees) — a prior session had already
+    weighed and passed on that direction for STAND, since it changes the whole rendering identity
+    rather than fixing this one gap, so didn't revisit it. Tried OSM's natural=coastline data next
+    (matching STAND's existing Three.js-mesh approach) and confirmed live it has real gaps on both
+    banks in exactly this stretch — NJ's mapped coastline stops at lat 40.88, Westchester has none
+    here at all — not usable for this bug specifically. USGS NHD's Waterbody layer had the Hudson as
+    one continuous federal hydrology polygon covering the whole stretch: confirmed live that all six
+    of v1.16.10's exact shared-vertex coordinates fall inside it (point-in-polygon test against the
+    real fetched geometry), and — since screenshots weren't rendering reliably to check against this
+    session — verified the actual live render with gl.readPixels pixel-level color sampling, calibrated
+    against known land/water reference points first, confirming a genuine multi-sample-wide water gap
+    at every latitude checked across the stretch, not just a plausible-looking shape. The raw polygon
+    (23,114-point outer ring) is decimated after fetching (outer ring to ~1200 points, holes under 15
+    points dropped as insignificant at this scale, remaining holes to ~80 points) and cached in
+    localStorage, same pattern as the OSM context loaders. Falls back to v1.16.10's rectangular patch
+    (renamed buildHudsonRectangleFallback) if the NHD fetch fails for any reason.
   v1.16.10 - 2026-07-11 - v1.16.6-v1.16.9 tried to fix the Hudson gap blind, guessing coordinates
     against screenshots for three rounds without ever converging, then removed the attempt entirely
     per direct instruction. This time used Claude in Chrome against the live deployed site (still
@@ -987,7 +1007,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.10';
+const APP_VERSION = '1.16.11';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1532,29 +1552,73 @@ function splitByStrait(features, boxA, boxB){
 // to query the *actual* fetched OSM data in the browser console — loadOsmContext(), clipGeometryToBox(),
 // and CONTEXT_CLIP_BOX are all real, callable functions/constants on that page, not just source text.
 //
-// Confirmed directly against real data, not assumption: an area-overlap grid scan (0.01° resolution
-// across the full lat 40.85-41.10 / lon -74.10 to -73.70 range) found zero overlapping area between
-// NJ's and Westchester's real clipped polygons — so this was never a broad "both counties' water
-// jurisdiction floods the whole river" situation the way the Sound gap was. A vertex-distance scan
-// found the actual cause: NJ's and Westchester's OSM boundary rings share exact, literal vertices
-// (distance 0.00000°) along a specific stretch of the real NJ/NY state line, from lat 40.9176 to
-// 40.9972 (HUDSON_STATELINE below) — both counties' polygons were built from the same underlying state
-// boundary reference and inherited its shared nodes. Checked the FULL clip range (lat 40.20-41.35) for
-// any other shared-vertex stretch: this is the only one. Not present anywhere near the Sound (already
-// separately fixed) or the rest of the Hudson.
-//
-// Built a small water-colored patch straddling just this stretch (HUDSON_STATELINE ± 0.025°, roughly
-// 1.3mi retraction on each side — enough real margin that near-shared vertices elsewhere in this same
-// scan, some as close as 0.000036°, are also covered) and tested it live in the browser before writing
-// any of this — added it to the live scene, screenshotted, toggled it on/off to confirm it was
-// covering a real land bridge and not just adding an unnecessary patch, then confirmed no other gap
-// opened up anywhere else in the frame. Only wrote this to the file after that visual confirmation.
+// v1.16.11: replaced the guessed rectangular patch with the real Hudson River shape, sourced from
+// the USGS National Hydrography Dataset (hydro.nationalmap.gov) rather than hand-picked coordinates.
+// Backstory: v1.16.5-v1.16.10 tried, in order, a tight clip box (shredded NJ's fill), a hand-drawn
+// ribbon (three rounds of guessed coordinates, never converged), and this rectangular patch (correct
+// per the real shared-vertex data, but visibly a straight-edged block, not a river — direct feedback
+// called it out plainly). A prior session had already considered and passed on rebuilding STAND
+// around a real map basemap (Leaflet/Mapbox-style, like the jillhubley.com reference) — that would
+// change STAND's whole rendering identity, not fix this one gap, so it wasn't revisited. Investigated
+// OSM's natural=coastline data as a coastline source instead (matching STAND's existing Three.js-mesh
+// approach): confirmed live that it has real gaps on both banks in exactly this stretch (NJ's mapped
+// coastline stops at lat 40.88, Westchester's has none at all here) — not usable for this specific
+// bug. The USGS NHD Waterbody layer (a federal hydrology dataset, not a coastline trace) turned out to
+// have the Hudson itself as one continuous polygon covering the whole stretch, confirmed live: all six
+// of the exact shared-vertex coordinates from the v1.16.10 fix landed inside it via a point-in-polygon
+// test, and a full pixel-level readback (gl.readPixels on the live rendered canvas, calibrated against
+// known land/water reference points first) confirmed a real multi-sample-wide water gap at every
+// latitude checked across the stretch — not just a shape that looks plausible in a screenshot.
+// The raw polygon is very high-resolution (23,114 points on the outer ring alone) — far more than this
+// stylized context layer needs, so it's decimated after fetching (outer ring to ~1200 points, holes
+// under 15 points dropped as visually insignificant at this scale, remaining holes to ~80 points) and
+// the result cached in localStorage, same pattern as the OSM context loaders. Falls back to the old
+// rectangular patch (now buildHudsonRectangleFallback) if the NHD fetch fails for any reason.
+const NHD_WATERBODY_URL = 'https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer/12/query'
+  + '?geometry=-74.10,40.85,-73.80,41.05&geometryType=esriGeometryEnvelope&inSR=4326'
+  + '&spatialRel=esriSpatialRelIntersects&outFields=FTYPE,AREASQKM&f=geojson';
+const NHD_HUDSON_CACHE_KEY = 'stand_nhd_hudson_v1';
+const NHD_OUTER_RING_TARGET_POINTS = 1200;
+const NHD_HOLE_MIN_POINTS = 15; // holes with fewer points than this are tiny islands, dropped as visually insignificant
+const NHD_HOLE_TARGET_POINTS = 80;
+function decimateRing(ring, targetPoints){
+  if(ring.length <= targetPoints) return ring;
+  const stride = Math.ceil(ring.length / targetPoints);
+  const out = [];
+  for(let i=0;i<ring.length;i+=stride) out.push(ring[i]);
+  const first = out[0], last = out[out.length-1];
+  if(first[0] !== last[0] || first[1] !== last[1]) out.push(first); // keep the ring closed after decimation
+  return out;
+}
+function decimateHudsonPolygon(rawRings){
+  const decimated = [decimateRing(rawRings[0], NHD_OUTER_RING_TARGET_POINTS)];
+  for(let i=1;i<rawRings.length;i++){
+    if(rawRings[i].length < NHD_HOLE_MIN_POINTS) continue;
+    decimated.push(decimateRing(rawRings[i], NHD_HOLE_TARGET_POINTS));
+  }
+  return decimated;
+}
+function meshFromClippedPolygon(clippedGeom, color){
+  const toXZ = ([lon,lat]) => { const p = project(lat, lon); return new THREE.Vector2(p.x, p.z); };
+  const shape = new THREE.Shape(clippedGeom.coordinates[0].map(toXZ));
+  for(let h=1; h<clippedGeom.coordinates.length; h++) shape.holes.push(new THREE.Path(clippedGeom.coordinates[h].map(toXZ)));
+  const geo = new THREE.ShapeGeometry(shape);
+  geo.rotateX(Math.PI / 2);
+  geo.translate(0, 0.08, 0);
+  const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 1.0, side: THREE.DoubleSide, depthWrite: false, fog: false });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 2.5;
+  scene.add(mesh);
+}
+// v1.16.10's rectangular patch, kept as the fallback if the NHD fetch fails — same shared-vertex
+// coordinates and margin as before, still a valid (if visually plain) guarantee against NJ/Westchester
+// touching.
 const HUDSON_STATELINE = [
   [-73.9183, 40.9176], [-73.9143, 40.9280], [-73.9088, 40.9468],
   [-73.8987, 40.9747], [-73.8961, 40.9819], [-73.8936, 40.9972]
 ];
-const HUDSON_STATELINE_MARGIN = 0.025; // ~1.3mi retraction on each side of the shared boundary line
-function buildHudsonStatelinePatch(){
+const HUDSON_STATELINE_MARGIN = 0.025;
+function buildHudsonRectangleFallback(){
   const extended = [
     [HUDSON_STATELINE[0][0], HUDSON_STATELINE[0][1] - 0.01],
     ...HUDSON_STATELINE,
@@ -1572,6 +1636,33 @@ function buildHudsonStatelinePatch(){
   const mesh = new THREE.Mesh(geo, mat);
   mesh.renderOrder = 2.5;
   scene.add(mesh);
+}
+async function buildHudsonWaterOverlay(){
+  try{
+    let decimatedRings = null;
+    const cached = localStorage.getItem(NHD_HUDSON_CACHE_KEY);
+    if(cached){
+      decimatedRings = JSON.parse(cached);
+    } else {
+      const res = await fetch(NHD_WATERBODY_URL);
+      if(!res.ok) throw new Error('NHD request failed: ' + res.status);
+      const data = await res.json();
+      // The Hudson/Tappan Zee estuary is the mid-sized natural=water(FTYPE 493) feature in this bbox —
+      // Long Island Sound (~3245 sq km) is much larger, small ponds/reservoirs are much smaller.
+      const hudson = (data.features || []).find(f =>
+        f.properties.FTYPE === 493 && f.properties.AREASQKM > 100 && f.properties.AREASQKM < 1000);
+      if(!hudson) throw new Error('Hudson waterbody feature not found in NHD response');
+      decimatedRings = decimateHudsonPolygon(hudson.geometry.coordinates);
+      try{ localStorage.setItem(NHD_HUDSON_CACHE_KEY, JSON.stringify(decimatedRings)); }
+      catch(e){ /* storage full or unavailable — non-fatal, just means next load re-fetches */ }
+    }
+    const clipped = clipGeometryToBox({ type: 'Polygon', coordinates: decimatedRings }, CONTEXT_CLIP_BOX);
+    if(!clipped) throw new Error('Hudson polygon clipped to nothing');
+    meshFromClippedPolygon(clipped, 0x122A3B);
+  } catch(err){
+    console.warn('STAND: NHD Hudson fetch failed, falling back to the rectangular patch —', err.message);
+    buildHudsonRectangleFallback();
+  }
 }
 
 
@@ -3313,7 +3404,7 @@ if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribu
   loadStateContext();
   loadLongIslandContext();
   loadWestchesterContext();
-  buildHudsonStatelinePatch();
+  buildHudsonWaterOverlay();
 })();
 </script>
 </body>
