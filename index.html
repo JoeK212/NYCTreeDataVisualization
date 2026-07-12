@@ -5,6 +5,33 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.15 - 2026-07-11 - Long Island Sound, same real-hydrology treatment as the Hudson, requested
+    directly next: "we need what you did in the Hudson River... over in [Long Island Sound]." Also
+    confirmed live that no Connecticut land data exists anywhere in the app — only NEW JERSEY,
+    WESTCHESTER, and LONG ISLAND are fetched/labeled — so whatever was filling the upper-right area
+    before was Westchester's or Long Island's own admin polygon overreaching into the Sound, the same
+    jurisdiction-into-water root cause as every other gap in this project, not real CT geometry.
+    Queried the Sound's real NHD polygon by GNIS_NAME='Long Island Sound' rather than by bounding box —
+    a bbox query in this area hits the ArcGIS server's 2000-feature result limit before ever reaching
+    it, since the Sound/Westchester/Long Island region has far more small ponds and inlets than the
+    Hudson bbox did. The real polygon is enormous: 87,817 points on the outer ring alone, spanning to
+    Rhode Island. Clipped to CONTEXT_CLIP_BOX first this time (unlike the Hudson, decimated first) since
+    so little of the full polygon is relevant here; decimated the clipped result down to ~1500 outer
+    points and kept 37 of 608 real-island holes (30+ points each, versus the Hudson's 15-point bar — the
+    Sound has roughly 10x as many holes, mostly insignificant rocks/buoys at this scale). Reverted Long
+    Island's old v1.16.5 clip-box trim (LONG_ISLAND_MAIN_BOX/NW_BOX, removed) back to a plain boundary —
+    one unified water-overlay approach for both gaps now, instead of two different-generation fixes
+    doing the same job. Reused every generic piece already built for the Hudson (meshFromClippedPolygon,
+    suppressOutlineOverWater, buildWaterOutline) without modification — only the Sound-specific fetch,
+    decimation, and fallback are new. Added a simple rectangular fallback (buildSoundRectangleFallback)
+    for if the NHD fetch fails, since reverting the old clip-box trim means there's no other protection
+    against Westchester/Long Island touching if this new fetch doesn't come through. Verified live
+    before writing any of this to the file: pixel-tested open Sound water, Long Island's real south
+    shore, Westchester's interior, City Island (real NYC data, confirmed not swallowed by the new water
+    shape), and the Rye/CT border area — all five matched expected land/water exactly. Also pixel-
+    scanned 560 points across the open Sound for leftover outline crossings (9 scattered hits, no
+    continuous line — consistent with real island outlines, not the old political-boundary crossing
+    bug) and load-tested the fallback in isolation to confirm it builds without error.
   v1.16.14 - 2026-07-11 - Direct feedback against a marked-up screenshot: v1.16.13 correctly removed
     the old state-line outline everywhere it crossed the real river, but that was the ONLY outline
     coverage along that whole stretch — the state line ran the entire length of the river, not just
@@ -1058,7 +1085,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.14';
+const APP_VERSION = '1.16.15';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1584,18 +1611,12 @@ const CONTEXT_CLIP_BOX = { lonMin: LON_MIN - 0.25, lonMax: LON_MAX + 0.45, latMi
 // reliable way to guarantee a hard constraint like "these two landmasses must never touch." v1.16.9
 // removed the ribbon entirely rather than keep guessing. The Hudson gap is unaddressed again for now
 // (back to how it looked before v1.16.5) — the Sound fix below is untouched and still holds.
-const SOUND_STRAIT_LON_SPLIT = -73.65; // roughly Manhasset Neck; west of this is the narrow Westchester/Nassau crossing near the Bronx
-const LONG_ISLAND_MAIN_BOX = { ...CONTEXT_CLIP_BOX, lonMin: SOUND_STRAIT_LON_SPLIT }; // Port Washington east through Northport/Port Jefferson — full latitude, no trim
-const LONG_ISLAND_NW_BOX = { ...CONTEXT_CLIP_BOX, lonMax: SOUND_STRAIT_LON_SPLIT, latMax: 40.85 }; // Great Neck/Kings Point corner — trimmed off the Sound
-// Splits one already-fetched feature list into two clip-box passes under the same name, so
-// buildContextGeometry's centroid/outline dissolve merges them back into a single landmass and label
-// instead of drawing two separately-labeled pieces.
-function splitByStrait(features, boxA, boxB){
-  return [
-    ...features.map(f => ({ ...f, __box: boxA })),
-    ...features.map(f => ({ ...f, __box: boxB })),
-  ];
-}
+// v1.16.15: the clip-box trim above worked and was never buggy, but it's now superseded — replaced
+// with a real Long Island Sound water polygon + outline (buildSoundWaterOverlay, same pattern as the
+// Hudson fix below), so Long Island is reverted to a plain, untrimmed boundary like NJ/Westchester.
+// One unified approach for both water gaps instead of two different-generation fixes doing the same
+// job. SOUND_STRAIT_LON_SPLIT/LONG_ISLAND_MAIN_BOX/LONG_ISLAND_NW_BOX/splitByStrait removed — nothing
+// calls them anymore.
 
 // v1.16.10: v1.16.6-v1.16.9 tried to fix the Hudson gap blind — three rounds of guessed coordinates
 // against screenshots, never converging, then removed entirely per direct instruction. This time,
@@ -1793,6 +1814,96 @@ async function buildHudsonWaterOverlay(){
   } catch(err){
     console.warn('STAND: NHD Hudson fetch failed, falling back to the rectangular patch —', err.message);
     const outerXZ = buildHudsonRectangleFallback();
+    suppressOutlineOverWater(outerXZ);
+    buildWaterOutline(outerXZ);
+  }
+}
+
+// v1.16.15: Long Island Sound, same real-hydrology approach as the Hudson above, requested directly
+// after the Hudson fix landed. Queried live via Claude in Chrome against the deployed site before
+// writing any of this: the Sound's real NHD polygon (also named, found directly by GNIS_NAME='Long
+// Island Sound' rather than by bbox — a bbox query here hits the ArcGIS server's 2000-feature result
+// limit before reaching it, since the Sound/Westchester/Long Island area has far more small ponds and
+// inlets than the Hudson bbox did) is enormous: 87,817 points on the outer ring alone, spanning all the
+// way to Rhode Island — far more than the Hudson, and far more than this stylized context layer needs.
+// Unlike the Hudson (decimated first, since nearly the whole polygon was already relevant), this one is
+// clipped to CONTEXT_CLIP_BOX FIRST and decimated after — decimating a 87k-point ring before clipping
+// would sample almost entirely from the irrelevant Rhode-Island-ward two-thirds of the shape. 608 holes
+// (real islands) exist within just the clipped area; kept only those with 30+ points (a higher bar than
+// the Hudson's 15 — the Sound has roughly 10x as many holes, mostly tiny rocks/buoys insignificant at
+// this scale) and decimated those down to ~100 points each.
+//
+// Verified live before writing this: pixel-sampled open Sound water (correct), Long Island's real
+// south shore and Westchester's interior (both correctly stayed land, not swallowed by the new water
+// shape), and City Island (real NYC borough data, not context) to confirm the water polygon's true
+// extent doesn't reach far enough south to paint over real accurate geometry the way an over-eager
+// guess could.
+//
+// Reverted Long Island's old clip-box trim (LONG_ISLAND_MAIN_BOX/NW_BOX, removed above) back to a
+// plain boundary for this — one unified water-overlay approach for both gaps, matching how NJ and
+// Westchester already work for the Hudson, instead of maintaining two different-generation fixes doing
+// the same job.
+const NHD_SOUND_URL = "https://hydro.nationalmap.gov/arcgis/rest/services/nhd/MapServer/12/query"
+  + "?where=GNIS_NAME='Long Island Sound'&outFields=FTYPE,AREASQKM,GNIS_NAME&f=geojson";
+const NHD_SOUND_CACHE_KEY = 'stand_nhd_sound_v1';
+const SOUND_OUTER_RING_TARGET_POINTS = 1500;
+const SOUND_HOLE_MIN_POINTS = 30;
+const SOUND_HOLE_TARGET_POINTS = 100;
+function decimateSoundPolygon(clippedRings){
+  const decimated = [decimateRingByStride(clippedRings[0], SOUND_OUTER_RING_TARGET_POINTS)];
+  for(let i=1;i<clippedRings.length;i++){
+    if(clippedRings[i].length < SOUND_HOLE_MIN_POINTS) continue;
+    decimated.push(decimateRingByStride(clippedRings[i], SOUND_HOLE_TARGET_POINTS));
+  }
+  return decimated;
+}
+// Fallback if the NHD fetch fails: a simple wide band spanning the full visible Sound, sized
+// conservatively (same "guaranteed margin over exact accuracy" reasoning as the Hudson's rectangle
+// fallback) — the real Sound is wide enough here that a plain rectangle safely separates Westchester
+// from Long Island without needing the Hudson's zigzag shared-vertex shape.
+const SOUND_FALLBACK_BAND = [
+  [-73.85, 40.82, 41.02], [-73.60, 40.85, 41.00], [-73.40, 40.88, 40.98], [-73.25, 40.90, 40.96],
+]; // [lon, southLat(Long Island side), northLat(Westchester side)]
+function buildSoundRectangleFallback(){
+  const south = SOUND_FALLBACK_BAND.map(([lon,sLat]) => [lon, sLat]);
+  const north = SOUND_FALLBACK_BAND.map(([lon,,nLat]) => [lon, nLat]);
+  const toXZ = ([lon,lat]) => { const p = project(lat, lon); return new THREE.Vector2(p.x, p.z); };
+  const southXZ = south.map(toXZ), northXZ = north.map(toXZ);
+  const outerXZ = [...southXZ, ...northXZ.slice().reverse()];
+  const shape = new THREE.Shape(outerXZ);
+  const geo = new THREE.ShapeGeometry(shape);
+  geo.rotateX(Math.PI / 2);
+  geo.translate(0, 0.08, 0);
+  const mat = new THREE.MeshBasicMaterial({ color: 0x122A3B, transparent: true, opacity: 1.0, side: THREE.DoubleSide, depthWrite: false, fog: false });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 2.5;
+  scene.add(mesh);
+  return outerXZ;
+}
+async function buildSoundWaterOverlay(){
+  try{
+    let decimatedRings = null;
+    const cached = localStorage.getItem(NHD_SOUND_CACHE_KEY);
+    if(cached){
+      decimatedRings = JSON.parse(cached);
+    } else {
+      const res = await fetch(NHD_SOUND_URL);
+      if(!res.ok) throw new Error('NHD request failed: ' + res.status);
+      const data = await res.json();
+      const sound = (data.features || []).find(f => f.properties.AREASQKM > 1000);
+      if(!sound) throw new Error('Long Island Sound feature not found in NHD response');
+      const clipped = clipGeometryToBox(sound.geometry, CONTEXT_CLIP_BOX);
+      if(!clipped) throw new Error('Sound polygon clipped to nothing');
+      decimatedRings = decimateSoundPolygon(clipped.coordinates);
+      try{ localStorage.setItem(NHD_SOUND_CACHE_KEY, JSON.stringify(decimatedRings)); }
+      catch(e){ /* storage full or unavailable — non-fatal, just means next load re-fetches */ }
+    }
+    const outerXZ = meshFromClippedPolygon({ type: 'Polygon', coordinates: decimatedRings }, 0x122A3B);
+    suppressOutlineOverWater(outerXZ);
+    buildWaterOutline(outerXZ);
+  } catch(err){
+    console.warn('STAND: NHD Sound fetch failed, falling back to the rectangular band —', err.message);
+    const outerXZ = buildSoundRectangleFallback();
     suppressOutlineOverWater(outerXZ);
     buildWaterOutline(outerXZ);
   }
@@ -2075,8 +2186,7 @@ async function loadLongIslandContext(){
     const osmFeatures = (await loadOsmContext())
       .filter(f => f.properties.name === 'Nassau County' || f.properties.name === 'Suffolk County');
     if(!osmFeatures.length) throw new Error('Nassau/Suffolk relations not found in Overpass result');
-    const osmSplit = splitByStrait(osmFeatures, LONG_ISLAND_MAIN_BOX, LONG_ISLAND_NW_BOX);
-    buildContextGeometry(osmSplit, () => 'Long Island', f => f.__box);
+    buildContextGeometry(osmFeatures, () => 'Long Island');
     return;
   } catch(err){
     console.warn('STAND: OSM context fetch failed for Long Island, falling back to county data —', err.message);
@@ -2085,8 +2195,7 @@ async function loadLongIslandContext(){
     const features = (await loadContextCounties())
       .filter(f => f.properties.STATE === NY_STATE_FIPS && LONG_ISLAND_COUNTIES.includes(f.properties.NAME));
     if(!features.length) throw new Error('no matching county features in response');
-    const split = splitByStrait(features, LONG_ISLAND_MAIN_BOX, LONG_ISLAND_NW_BOX);
-    buildContextGeometry(split, () => 'Long Island', f => f.__box); // merge both counties under one label
+    buildContextGeometry(features, () => 'Long Island'); // merge both counties under one label
   } catch(err){
     console.warn('STAND: Long Island context fetch failed entirely (outline omitted) —', err.message);
   }
@@ -3537,13 +3646,15 @@ if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribu
   initScene();
   loadAndRender('All', true);
   loadBoroughBoundaries();
-  loadLongIslandContext(); // independent of the Hudson fix below, no ordering needed
   // v1.16.13: NJ and Westchester's outlines need to exist before buildHudsonWaterOverlay can trim the
   // segments that cross the real river shape — awaited here instead of fired-and-forgotten like the
-  // other loaders. Both functions catch all their own errors internally and never throw, so this is
-  // safe even if either fetch fails outright.
-  await Promise.all([loadStateContext(), loadWestchesterContext()]);
+  // other loaders. v1.16.15 added Long Island to this same await for the same reason, now that
+  // buildSoundWaterOverlay needs to trim Long Island's and Westchester's outlines too. All three
+  // loaders catch their own errors internally and never throw, so this is safe even if any fetch fails
+  // outright.
+  await Promise.all([loadStateContext(), loadWestchesterContext(), loadLongIslandContext()]);
   buildHudsonWaterOverlay();
+  buildSoundWaterOverlay();
 })();
 </script>
 </body>
