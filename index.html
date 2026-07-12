@@ -5,6 +5,31 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.17 - 2026-07-11 - Direct feedback with several marked-up screenshots: a long straight line was
+    visible cutting through open water, arrowed as an obvious bug, along with a couple of similar
+    smaller artifacts elsewhere. Confirmed live before touching anything: Long Island's outline had a
+    single segment running 773 world units (roughly two-thirds of the visible frame's height) exactly
+    along lon=-73.2502, CONTEXT_CLIP_BOX's own east edge. Root cause, and it's general, not specific to
+    any one landmass: every real landmass (Long Island's real jurisdiction, NJ's, Westchester's) and
+    both water polygons (Hudson, Sound) extend well past this app's visible frame, so they all get
+    clipped to CONTEXT_CLIP_BOX — and clipping inserts new vertices exactly on the box boundary
+    wherever it cuts a ring. The outline-drawing code was tracing straight through those synthetic
+    points as if they were real coastline. This has been true since the very first context landmass was
+    added — not a new regression from this session's work — just newly obvious now that the water and
+    backdrop fixes cleaned up everything else nearby, making a stray line more visible against a
+    cleaner map. Fixed at the root for both outline sources at once: segmentOnClipEdgeLonLat filters
+    the general context outline (NJ/Westchester/Long Island, in buildContextGeometry) before it's added
+    to the line geometry, and segmentOnClipEdgeXZ does the same for buildWaterOutline (Hudson/Sound) —
+    parallel logic in the two coordinate spaces each already works in, rather than forcing one through
+    the other. Neither fill is touched — a fill still needs its clip-boundary vertices to stay a closed,
+    valid shape; only the stroke skips drawing along them. Verified live before writing this: applied
+    the exact new filter to the deployed outlines and confirmed only 3 of 7,646 total segments were
+    removed (lengths 773.3, 262.0, and a degenerate 0.0-length duplicate point) — a small, surgical
+    removal matching the reported artifacts precisely, not a blunt filter catching real coastline.
+    Also checked the fourth screenshot (a dramatic-looking backdrop shape from an extreme tilted 3D
+    camera angle) against the backdrop mesh's actual world bounding box — confirmed its real lat/lon
+    extent is still correctly restricted to north of BACKDROP_LAT_MIN; that one was a perspective/
+    foreshortening effect from the camera angle, not a geometry bug, so nothing was changed there.
   v1.16.16 - 2026-07-11 - Direct feedback with a marked-up screenshot: several visible edges of the
     frame showed the plain ocean background where real land should be — NJ, Westchester, and Long
     Island's real admin polygons don't cover the full CONTEXT_CLIP_BOX (the app only ever fetches those
@@ -1106,7 +1131,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.16';
+const APP_VERSION = '1.16.17';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1751,11 +1776,30 @@ function suppressOutlineOverWater(waterOuterRingXZ){
 // the exact same ring already used for the fill (outerXZ, returned by meshFromClippedPolygon and
 // buildHudsonRectangleFallback), so it can't drift out of sync with whichever water shape is actually
 // on screen. Same visual style as every other coastline in the app (0xD6C9A9, opacity 0.6).
+// v1.16.17: same fix as the context outline above — the water polygon's own outer ring includes
+// synthetic points wherever clipGeometryToBox cut it against CONTEXT_CLIP_BOX (the real Hudson/Sound
+// extend well past our visible frame), and this loop was drawing those clip seams as if they were real
+// shoreline. Filtered in world XZ space here rather than lon/lat, since outerRingXZ is already in that
+// space (Vector2, needed for THREE.Shape) and reprojecting back to lon/lat just to filter would be
+// needless work — the box's own world-space edges are computed once via project() instead.
+const CLIP_EDGE_EPS_XZ = 0.5; // world units — real distinct points differ by far more than this after projection
+function boxWorldEdges(box){
+  const p1 = project(box.latMin, box.lonMin), p2 = project(box.latMax, box.lonMax);
+  return { xMin: Math.min(p1.x,p2.x), xMax: Math.max(p1.x,p2.x), zMin: Math.min(p1.z,p2.z), zMax: Math.max(p1.z,p2.z) };
+}
+function segmentOnClipEdgeXZ(ax, az, bx, bz, edges, eps){
+  return (Math.abs(ax-edges.xMin)<eps && Math.abs(bx-edges.xMin)<eps) ||
+         (Math.abs(ax-edges.xMax)<eps && Math.abs(bx-edges.xMax)<eps) ||
+         (Math.abs(az-edges.zMin)<eps && Math.abs(bz-edges.zMin)<eps) ||
+         (Math.abs(az-edges.zMax)<eps && Math.abs(bz-edges.zMax)<eps);
+}
 function buildWaterOutline(outerRingXZ){
+  const edges = boxWorldEdges(CONTEXT_CLIP_BOX);
   const positions = [];
   for(let i=0;i<outerRingXZ.length;i++){
     const a = outerRingXZ[i], b = outerRingXZ[(i+1) % outerRingXZ.length];
-    positions.push(a.x, 0.6, a.y, b.x, 0.6, b.y); // Vector2 convention: .y holds world Z, not .z
+    if(segmentOnClipEdgeXZ(a.x, a.y, b.x, b.y, edges, CLIP_EDGE_EPS_XZ)) continue; // Vector2 convention: .y holds world Z, not .z
+    positions.push(a.x, 0.6, a.y, b.x, 0.6, b.y);
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
@@ -2556,9 +2600,28 @@ function buildContextGeometry(features, nameFn, boxFn){
     }
   });
 
-  if(outerSegs.length){
+  // v1.16.17: direct feedback with a marked-up screenshot — a long straight line was visible cutting
+  // through open water/along the frame edge, arrowed as an obvious bug. Confirmed live: Long Island's
+  // outline had a single segment running the full box height at lon=-73.2502 (CONTEXT_CLIP_BOX's exact
+  // east edge) — Sutherland-Hodgman clipping inserts new vertices exactly on the box boundary wherever
+  // a real polygon (Long Island's real extent continues well past our visible frame) gets cut off, and
+  // this loop was drawing an outline stroke straight through those synthetic points as if they were
+  // real coastline. Not new to this version — every landmass has always been clipped to
+  // CONTEXT_CLIP_BOX — just newly visible/flagged now that the water and backdrop fixes cleaned up
+  // everything else nearby. Fixed by skipping any segment whose both endpoints lie on the same box
+  // edge (segmentOnClipEdgeLonLat) before it's added to the outline geometry — the fill is untouched
+  // (it still needs those vertices to stay a closed, valid shape), only the stroke skips them.
+  const CLIP_EDGE_EPS_LONLAT = 0.0005;
+  function segmentOnClipEdgeLonLat(a, b, box, eps){
+    return (Math.abs(a[0]-box.lonMin)<eps && Math.abs(b[0]-box.lonMin)<eps) ||
+           (Math.abs(a[0]-box.lonMax)<eps && Math.abs(b[0]-box.lonMax)<eps) ||
+           (Math.abs(a[1]-box.latMin)<eps && Math.abs(b[1]-box.latMin)<eps) ||
+           (Math.abs(a[1]-box.latMax)<eps && Math.abs(b[1]-box.latMax)<eps);
+  }
+  const realOuterSegs = outerSegs.filter(([a,b]) => !segmentOnClipEdgeLonLat(a, b, CONTEXT_CLIP_BOX, CLIP_EDGE_EPS_LONLAT));
+  if(realOuterSegs.length){
     const positions = [];
-    outerSegs.forEach(([a,b])=>{
+    realOuterSegs.forEach(([a,b])=>{
       const pa = project(a[1], a[0]), pb = project(b[1], b[0]);
       positions.push(pa.x, 0.6, pa.z, pb.x, 0.6, pb.z);
     });
