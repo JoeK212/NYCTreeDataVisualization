@@ -5,6 +5,25 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.13 - 2026-07-11 - Direct feedback against a marked-up screenshot: the white NJ/NY state-line
+    outline (built independently in buildContextGeometry, from admin-boundary data) still traced the
+    old political line straight through the middle of the river, completely disconnected from the real
+    water shape's edges added in v1.16.11. Two different data sources, drawn independently, never
+    reconciled — a real bug, not a problem with the protected Hudson water shape itself. Fixed by
+    tagging every context outline (contextOutline in userData) and, once the real water shape is known,
+    dropping any outline segment whose midpoint falls inside it. Two real bugs caught by testing this
+    live before shipping, not assumed to work: (1) boot() fired buildHudsonWaterOverlay() concurrently
+    with the NJ/Westchester context loaders with no ordering, so the outlines it needed to trim
+    sometimes didn't exist yet — boot is now async and awaits both loaders first. (2) the initial
+    point-in-polygon check silently always returned false: the water ring is built from THREE.Vector2
+    (needed for THREE.Shape), which only has .x/.y, not .z — pointInRingXZ was reading ring[i].z
+    (always undefined) instead of ring[i].y where world Z actually lives. Caught by testing with a
+    known 4-corner square (worked), then the real ring (didn't), which isolated it immediately. After
+    the fix: 707 of 10,611 outline segments correctly removed, and a systematic 624-point pixel scan
+    across the strait found the outline color essentially gone from the water, with only a handful of
+    ambiguous edge-of-patch hits remaining (indistinguishable from tree-canopy dots at this sampling
+    precision). Applied to both the NHD success path and the rectangular fallback, so the outline never
+    crosses whichever water shape actually ends up on screen.
   v1.16.12 - 2026-07-11 - Critical regression from v1.16.11, reported directly: all five NYC boroughs
     rendered as open water (only the independent tree-canopy points still visible), while NJ/
     Westchester/Long Island stayed correct. Not a camera issue — confirmed after Recenter didn't fix
@@ -1027,7 +1046,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.12';
+const APP_VERSION = '1.16.13';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1629,9 +1648,51 @@ function decimateHudsonPolygon(rawRings){
   }
   return decimated;
 }
+// v1.16.13: direct feedback against a marked-up screenshot — the white NJ/NY state-line outline
+// (built independently from the admin-boundary data, in buildContextGeometry) still traces the old
+// political line straight through the middle of the river, disconnected from the real water shape's
+// edges built in v1.16.11. Two different data sources, drawn independently, never reconciled. Fixed by
+// tagging every context outline (contextOutline in userData, set in buildContextGeometry) and, once
+// the real water shape is known, dropping any outline segment whose midpoint falls inside it — a
+// straightforward point-in-polygon test in the same world XZ space everything's already rendered in,
+// no lon/lat round-tripping needed. Applied after both the NHD success path and the rectangle
+// fallback, so the outline never crosses whichever water shape actually ended up on screen.
+// v1.16.13 fix, caught before shipping by live testing: waterOuterRingXZ is an array of THREE.Vector2
+// (from meshFromClippedPolygon/buildHudsonRectangleFallback, which need Vector2 for THREE.Shape) —
+// Vector2 only has .x/.y, not .z, so world Z is stored in .y here. Both this function and the point it
+// tests need to agree on that, or ring[i].z is silently undefined and the test always returns false
+// (confirmed live: an isolated test with plain {x,z} objects worked, the real Vector2 ring didn't,
+// until this was fixed to use .y consistently).
+function pointInRingXZ(pt, ring){
+  let inside = false;
+  for(let i=0,j=ring.length-1; i<ring.length; j=i++){
+    const xi=ring[i].x, zi=ring[i].y, xj=ring[j].x, zj=ring[j].y;
+    const intersect = ((zi>pt.z) !== (zj>pt.z)) && (pt.x < (xj-xi)*(pt.z-zi)/(zj-zi)+xi);
+    if(intersect) inside = !inside;
+  }
+  return inside;
+}
+function suppressOutlineOverWater(waterOuterRingXZ){
+  scene.traverse(obj => {
+    if(!obj.userData.contextOutline) return;
+    const arr = obj.geometry.attributes.position.array;
+    const kept = [];
+    for(let i=0;i<arr.length;i+=6){
+      const midX = (arr[i] + arr[i+3]) / 2, midZ = (arr[i+2] + arr[i+5]) / 2;
+      if(!pointInRingXZ({x: midX, z: midZ}, waterOuterRingXZ)){
+        kept.push(arr[i], arr[i+1], arr[i+2], arr[i+3], arr[i+4], arr[i+5]);
+      }
+    }
+    obj.geometry.dispose();
+    const newGeo = new THREE.BufferGeometry();
+    newGeo.setAttribute('position', new THREE.Float32BufferAttribute(kept, 3));
+    obj.geometry = newGeo;
+  });
+}
 function meshFromClippedPolygon(clippedGeom, color){
   const toXZ = ([lon,lat]) => { const p = project(lat, lon); return new THREE.Vector2(p.x, p.z); };
-  const shape = new THREE.Shape(clippedGeom.coordinates[0].map(toXZ));
+  const outerXZ = clippedGeom.coordinates[0].map(toXZ);
+  const shape = new THREE.Shape(outerXZ);
   for(let h=1; h<clippedGeom.coordinates.length; h++) shape.holes.push(new THREE.Path(clippedGeom.coordinates[h].map(toXZ)));
   const geo = new THREE.ShapeGeometry(shape);
   geo.rotateX(Math.PI / 2);
@@ -1640,6 +1701,7 @@ function meshFromClippedPolygon(clippedGeom, color){
   const mesh = new THREE.Mesh(geo, mat);
   mesh.renderOrder = 2.5;
   scene.add(mesh);
+  return outerXZ;
 }
 // v1.16.10's rectangular patch, kept as the fallback if the NHD fetch fails — same shared-vertex
 // coordinates and margin as before, still a valid (if visually plain) guarantee against NJ/Westchester
@@ -1659,7 +1721,8 @@ function buildHudsonRectangleFallback(){
   const east = extended.map(([lon,lat]) => [lon + HUDSON_STATELINE_MARGIN, lat]);
   const westXZ = west.map(([lon,lat]) => { const p = project(lat, lon); return new THREE.Vector2(p.x, p.z); });
   const eastXZ = east.map(([lon,lat]) => { const p = project(lat, lon); return new THREE.Vector2(p.x, p.z); });
-  const shape = new THREE.Shape([...westXZ, ...eastXZ.slice().reverse()]);
+  const outerXZ = [...westXZ, ...eastXZ.slice().reverse()];
+  const shape = new THREE.Shape(outerXZ);
   const geo = new THREE.ShapeGeometry(shape);
   geo.rotateX(Math.PI / 2);
   geo.translate(0, 0.08, 0);
@@ -1667,6 +1730,7 @@ function buildHudsonRectangleFallback(){
   const mesh = new THREE.Mesh(geo, mat);
   mesh.renderOrder = 2.5;
   scene.add(mesh);
+  return outerXZ;
 }
 async function buildHudsonWaterOverlay(){
   try{
@@ -1689,10 +1753,12 @@ async function buildHudsonWaterOverlay(){
     }
     const clipped = clipGeometryToBox({ type: 'Polygon', coordinates: decimatedRings }, CONTEXT_CLIP_BOX);
     if(!clipped) throw new Error('Hudson polygon clipped to nothing');
-    meshFromClippedPolygon(clipped, 0x122A3B);
+    const outerXZ = meshFromClippedPolygon(clipped, 0x122A3B);
+    suppressOutlineOverWater(outerXZ);
   } catch(err){
     console.warn('STAND: NHD Hudson fetch failed, falling back to the rectangular patch —', err.message);
-    buildHudsonRectangleFallback();
+    const outerXZ = buildHudsonRectangleFallback();
+    suppressOutlineOverWater(outerXZ);
   }
 }
 
@@ -2297,6 +2363,9 @@ function buildContextGeometry(features, nameFn, boxFn){
     const mat = new THREE.LineBasicMaterial({color:0xD6C9A9, transparent:true, opacity:0.6, depthWrite:false, fog:false});
     const lines = new THREE.LineSegments(geo, mat);
     lines.renderOrder = 3;
+    // v1.16.13: tagged so buildHudsonWaterOverlay can find and trim this outline once the real river
+    // shape is known — see suppressOutlineOverWater below for why.
+    lines.userData.contextOutline = true;
     scene.add(lines);
   }
 
@@ -3418,7 +3487,7 @@ document.getElementById('themeToggle').addEventListener('click', toggleTheme);
 if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
 
 /* ================= Boot ================= */
-(function boot(){
+(async function boot(){
   applyThemeChrome();
   document.getElementById('footVersion').innerHTML =
     `STAND · v${APP_VERSION} · Joe.K · <a href="https://axisbim.io" target="_blank" rel="noopener">axisbim.io</a> · data: NYC Open Data, Street Tree Census (2005 & 2015)`;
@@ -3432,9 +3501,12 @@ if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribu
   initScene();
   loadAndRender('All', true);
   loadBoroughBoundaries();
-  loadStateContext();
-  loadLongIslandContext();
-  loadWestchesterContext();
+  loadLongIslandContext(); // independent of the Hudson fix below, no ordering needed
+  // v1.16.13: NJ and Westchester's outlines need to exist before buildHudsonWaterOverlay can trim the
+  // segments that cross the real river shape — awaited here instead of fired-and-forgotten like the
+  // other loaders. Both functions catch all their own errors internally and never throw, so this is
+  // safe even if either fetch fails outright.
+  await Promise.all([loadStateContext(), loadWestchesterContext()]);
   buildHudsonWaterOverlay();
 })();
 </script>
