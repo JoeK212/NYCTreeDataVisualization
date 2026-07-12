@@ -5,6 +5,18 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.14 - 2026-07-11 - Direct feedback against a marked-up screenshot: v1.16.13 correctly removed
+    the old state-line outline everywhere it crossed the real river, but that was the ONLY outline
+    coverage along that whole stretch — the state line ran the entire length of the river, not just
+    where it happened to cross land — so removing it left NJ's (and Westchester's) coast with no
+    boundary stroke at all through this area. Fixed by drawing the real water polygon's own boundary as
+    a new outline stroke (buildWaterOutline), reusing the exact same ring already used for the water
+    fill so it can never drift out of sync with whichever shape is actually on screen — same visual
+    style as every other coastline in the app. Verified live before shipping: rebuilt the exact
+    production pipeline against the live site, pixel-sampled a band along the NJ shore (85 cream-colored
+    hits versus near-zero before), and checked the new outline's own geometry directly for stray or
+    oversized segments (longest segment 33 world units out of WORLD_SIZE 1200 — normal, no wrap-around
+    artifact from closing the ring loop).
   v1.16.13 - 2026-07-11 - Direct feedback against a marked-up screenshot: the white NJ/NY state-line
     outline (built independently in buildContextGeometry, from admin-boundary data) still traced the
     old political line straight through the middle of the river, completely disconnected from the real
@@ -1046,7 +1058,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.13';
+const APP_VERSION = '1.16.14';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1689,6 +1701,28 @@ function suppressOutlineOverWater(waterOuterRingXZ){
     obj.geometry = newGeo;
   });
 }
+// v1.16.14: direct feedback against a marked-up screenshot — suppressOutlineOverWater correctly
+// removed the old state-line outline everywhere it crossed the real river, but that was the ONLY
+// outline coverage along that whole stretch (the state line ran the entire length of the river, not
+// just where it happened to cross land), so removing it left NJ's coast with no boundary stroke at
+// all in this area. Fixed by drawing the real water polygon's own boundary as a new stroke — reuses
+// the exact same ring already used for the fill (outerXZ, returned by meshFromClippedPolygon and
+// buildHudsonRectangleFallback), so it can't drift out of sync with whichever water shape is actually
+// on screen. Same visual style as every other coastline in the app (0xD6C9A9, opacity 0.6).
+function buildWaterOutline(outerRingXZ){
+  const positions = [];
+  for(let i=0;i<outerRingXZ.length;i++){
+    const a = outerRingXZ[i], b = outerRingXZ[(i+1) % outerRingXZ.length];
+    positions.push(a.x, 0.6, a.y, b.x, 0.6, b.y); // Vector2 convention: .y holds world Z, not .z
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  const mat = new THREE.LineBasicMaterial({color:0xD6C9A9, transparent:true, opacity:0.6, depthWrite:false, fog:false});
+  const lines = new THREE.LineSegments(geo, mat);
+  lines.renderOrder = 3;
+  lines.userData.waterOutline = true;
+  scene.add(lines);
+}
 function meshFromClippedPolygon(clippedGeom, color){
   const toXZ = ([lon,lat]) => { const p = project(lat, lon); return new THREE.Vector2(p.x, p.z); };
   const outerXZ = clippedGeom.coordinates[0].map(toXZ);
@@ -1755,10 +1789,12 @@ async function buildHudsonWaterOverlay(){
     if(!clipped) throw new Error('Hudson polygon clipped to nothing');
     const outerXZ = meshFromClippedPolygon(clipped, 0x122A3B);
     suppressOutlineOverWater(outerXZ);
+    buildWaterOutline(outerXZ);
   } catch(err){
     console.warn('STAND: NHD Hudson fetch failed, falling back to the rectangular patch —', err.message);
     const outerXZ = buildHudsonRectangleFallback();
     suppressOutlineOverWater(outerXZ);
+    buildWaterOutline(outerXZ);
   }
 }
 
