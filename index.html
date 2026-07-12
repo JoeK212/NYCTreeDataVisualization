@@ -5,6 +5,27 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.16 - 2026-07-11 - Direct feedback with a marked-up screenshot: several visible edges of the
+    frame showed the plain ocean background where real land should be — NJ, Westchester, and Long
+    Island's real admin polygons don't cover the full CONTEXT_CLIP_BOX (the app only ever fetches those
+    three specific counties/regions), and real land exists in the gaps (Rockland/Putnam/Orange NY,
+    Fairfield CT) that's simply never fetched. Rather than add and maintain more county/state boundary
+    sources for what's ultimately backdrop, filled the gaps with one simple land-colored shape.
+    Flagged directly before implementing, and correctly: the water overlays (Hudson/Sound) are clipped
+    to the full rectangular CONTEXT_CLIP_BOX, so a land backdrop added carelessly could end up looking
+    like it's been bitten into by a straight artificial water edge. Solved by render order alone rather
+    than shaping the backdrop around the water polygons: it sits at renderOrder 1 — above the base ocean
+    plane (0), below every real landmass fill and both water overlays (2/2.5) — so real data always
+    draws on top and the backdrop is invisible underneath it; wherever nothing else exists, it shows
+    through as land, and the water overlays now read as meeting a real coastline instead of dangling in
+    open background. Checked every real landmass's actual clipped extent live before picking
+    BACKDROP_LAT_MIN (40.90): NJ's real southern edge only reaches lat 40.59, and neither Long Island's
+    south shore nor Staten Island's real tip reach anywhere near that band either — nothing genuinely
+    terrestrial or oceanic from the three fetched landmasses exists north of that line within the box,
+    which is what keeps the backdrop from ever being able to paint over the real Atlantic. Verified
+    live with the exact production code before shipping: both flagged void areas (northwest of NJ,
+    north of Westchester near where Connecticut would be) read as land, while real Sound water, real
+    Hudson water, and real NJ land all still read exactly as before.
   v1.16.15 - 2026-07-11 - Long Island Sound, same real-hydrology treatment as the Hudson, requested
     directly next: "we need what you did in the Hudson River... over in [Long Island Sound]." Also
     confirmed live that no Connecticut land data exists anywhere in the app — only NEW JERSEY,
@@ -1085,7 +1106,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.15';
+const APP_VERSION = '1.16.16';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1907,6 +1928,51 @@ async function buildSoundWaterOverlay(){
     suppressOutlineOverWater(outerXZ);
     buildWaterOutline(outerXZ);
   }
+}
+
+// v1.16.16: direct feedback with a marked-up screenshot — NJ, Westchester, and Long Island's real
+// admin polygons don't cover the full CONTEXT_CLIP_BOX, since the app only ever fetches those three
+// specific counties/regions. Real land exists in the gaps (Rockland/Putnam/Orange NY north of NJ and
+// Westchester, Fairfield CT east of the Sound) — it's just never fetched, so those areas showed the
+// plain ocean background instead. Rather than fetch and maintain yet more county/state boundaries for
+// what's ultimately backdrop, this fills the gaps with a single simple land-colored shape.
+//
+// Flagged directly before implementing: the water overlays (Hudson/Sound) are clipped to the full
+// rectangular CONTEXT_CLIP_BOX, so without care a land backdrop could look like it's been bitten into
+// by a straight artificial water edge, or could NOT be bitten into by an edge, and cover a piece of
+// water that's a hole in itself. Solved by render order alone, without needing to shape the backdrop
+// around the water polygons at all: the backdrop sits at renderOrder 1 — above the base ocean plane
+// (0), below every real landmass fill and both water overlays (2/2.5). Wherever real data exists
+// (landmass or water), it draws on top and the backdrop is simply invisible underneath; wherever
+// neither exists, the backdrop shows through as land, and it now reads as the water meeting a real
+// coastline instead of dangling in open background.
+//
+// Confirmed live before writing this, checking every real landmass's actual clipped extent first (not
+// assumed): NJ's real southern edge only reaches lat 40.59, Long Island's south shore and Staten
+// Island's real tip are both well south of that too — nothing genuinely terrestrial from any of the
+// three fetched landmasses, and no true open ocean, exists north of BACKDROP_LAT_MIN. Restricting the
+// backdrop to that band is what keeps it from ever being able to paint over the real Atlantic south of
+// Staten Island or Long Island — it's not excluded by shape, it's just never asked to reach that far
+// south in the first place. Verified with pixel checks after building it: both void areas read as land
+// (the "is this Pennsylvania??" area northwest of NJ, and the area north of Westchester near where
+// Connecticut would be), while real Sound water, real Hudson water, real NJ land, and true open ocean
+// south of Staten Island all still read exactly as they did before this change.
+const BACKDROP_LAT_MIN = 40.90;
+function buildLandBackdrop(){
+  const b = CONTEXT_CLIP_BOX;
+  const corners = [
+    [b.lonMin, BACKDROP_LAT_MIN], [b.lonMax, BACKDROP_LAT_MIN],
+    [b.lonMax, b.latMax], [b.lonMin, b.latMax],
+  ];
+  const toXZ = ([lon,lat]) => { const p = project(lat, lon); return new THREE.Vector2(p.x, p.z); };
+  const shape = new THREE.Shape(corners.map(toXZ));
+  const geo = new THREE.ShapeGeometry(shape);
+  geo.rotateX(Math.PI / 2);
+  geo.translate(0, 0.03, 0); // below every real land fill (0.05) and both water overlays (0.08), above the ocean plane
+  const mat = new THREE.MeshBasicMaterial({ color: 0x4A4230, transparent: true, opacity: 1.0, side: THREE.DoubleSide, depthWrite: false, fog: false });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 1;
+  scene.add(mesh);
 }
 
 
@@ -3644,6 +3710,7 @@ if(localStorage.getItem('theme') === 'dark') document.documentElement.setAttribu
   renderLegend();
   renderScaleBar();
   initScene();
+  buildLandBackdrop();
   loadAndRender('All', true);
   loadBoroughBoundaries();
   // v1.16.13: NJ and Westchester's outlines need to exist before buildHudsonWaterOverlay can trim the
