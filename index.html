@@ -5,6 +5,31 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.18 - 2026-07-11 - Direct report: the Hudson/Sound water shapes weren't rendering at all, not
+    even the fallback, in a local file:// page and a privacy-focused browser (DuckDuckGo). Regular
+    Chrome worked fine at first, which pointed toward the browser rather than the code — until a real
+    DevTools console screenshot from the LIVE Netlify site, in regular Chrome, showed the actual cause:
+    "Access to fetch at 'https://hydro.nationalmap.gov/...' has been blocked by CORS policy: No
+    'Access-Control-Allow-Origin' header is present." The government hydrology server itself
+    intermittently omits CORS headers — the same class of unreliability already known from the public
+    Overpass instance (see the v1.16.4 retry-logic note) — so this can happen in ANY browser, not just
+    the ones first suspected. Console also showed STAND's own warning firing correctly ("STAND: NHD
+    Sound fetch failed, falling back to..."), meaning the fallback code path was being triggered — so
+    the mystery was why the fallback rectangle itself wasn't visible. Tested this directly rather than
+    guess further: forced the exact same fetch failure live, and separately forced a simulated
+    file://-style localStorage SecurityError on top of it. Both times, both fallback functions ran to
+    completion with no errors and a rectangle-colored mesh was confirmed present and pixel-correct at
+    the expected location. Couldn't find a code bug in the fallback path itself after this — but a
+    plain rectangle was always a weak fallback regardless, so instead of continuing to chase a
+    hypothetical bug, replaced both guessed fallback shapes with real ones: captured actual Hudson and
+    Sound shapes from a successful fetch in the same live session, decimated down to small, permanent
+    waypoint sets (31 and 46 points) baked directly into the file as HUDSON_BAKED_SHAPE/
+    SOUND_BAKED_SHAPE. These no longer depend on the live fetch succeeding even once, ever — not at
+    first load, not for the baking, nothing. buildHudsonRectangleFallback/buildSoundRectangleFallback
+    renamed to buildHudsonBakedFallback/buildSoundBakedFallback since they're no longer rectangles.
+    Verified the exact production code live before shipping: bounding boxes of the new fallback shapes
+    closely match the real live-fetched shapes' extents, and pixel checks confirm correct water/land
+    placement at the Hudson strait, the Sound, and real NJ land.
   v1.16.17 - 2026-07-11 - Direct feedback with several marked-up screenshots: a long straight line was
     visible cutting through open water, arrowed as an obvious bug, along with a couple of similar
     smaller artifacts elsewhere. Confirmed live before touching anything: Long Island's outline had a
@@ -1131,7 +1156,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.17';
+const APP_VERSION = '1.16.18';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1823,34 +1848,24 @@ function meshFromClippedPolygon(clippedGeom, color){
   scene.add(mesh);
   return outerXZ;
 }
-// v1.16.10's rectangular patch, kept as the fallback if the NHD fetch fails — same shared-vertex
-// coordinates and margin as before, still a valid (if visually plain) guarantee against NJ/Westchester
-// touching.
-const HUDSON_STATELINE = [
-  [-73.9183, 40.9176], [-73.9143, 40.9280], [-73.9088, 40.9468],
-  [-73.8987, 40.9747], [-73.8961, 40.9819], [-73.8936, 40.9972]
-];
-const HUDSON_STATELINE_MARGIN = 0.025;
-function buildHudsonRectangleFallback(){
-  const extended = [
-    [HUDSON_STATELINE[0][0], HUDSON_STATELINE[0][1] - 0.01],
-    ...HUDSON_STATELINE,
-    [HUDSON_STATELINE[HUDSON_STATELINE.length-1][0], HUDSON_STATELINE[HUDSON_STATELINE.length-1][1] + 0.01],
-  ];
-  const west = extended.map(([lon,lat]) => [lon - HUDSON_STATELINE_MARGIN, lat]);
-  const east = extended.map(([lon,lat]) => [lon + HUDSON_STATELINE_MARGIN, lat]);
-  const westXZ = west.map(([lon,lat]) => { const p = project(lat, lon); return new THREE.Vector2(p.x, p.z); });
-  const eastXZ = east.map(([lon,lat]) => { const p = project(lat, lon); return new THREE.Vector2(p.x, p.z); });
-  const outerXZ = [...westXZ, ...eastXZ.slice().reverse()];
-  const shape = new THREE.Shape(outerXZ);
-  const geo = new THREE.ShapeGeometry(shape);
-  geo.rotateX(Math.PI / 2);
-  geo.translate(0, 0.08, 0);
-  const mat = new THREE.MeshBasicMaterial({ color: 0x122A3B, transparent: true, opacity: 1.0, side: THREE.DoubleSide, depthWrite: false, fog: false });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.renderOrder = 2.5;
-  scene.add(mesh);
-  return outerXZ;
+// v1.16.18: replaced the guessed rectangular patch with a real shape, live-captured. Root cause found
+// via a real DevTools console screenshot: "Access to fetch at 'https://hydro.nationalmap.gov/...' has
+// been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present" — the government
+// hydrology server itself intermittently omits CORS headers (same class of unreliability already known
+// from the public Overpass instance — see the v1.16.4 retry-logic note). Confirmed the fallback CODE
+// itself isn't the bug: forced the exact same fetch failure live, and separately forced a simulated
+// file://-style localStorage SecurityError on top of it, and both times buildHudsonRectangleFallback
+// ran to completion and rendered correctly. But a plain rectangle is a poor fallback shape regardless
+// of whether the code runs — so instead of only trusting the live fetch, a real Hudson shape was
+// captured directly from a successful fetch (same live session, same page) and baked in here as a
+// permanent, always-available shape: 31 points, decimated from the full ~1600-point live shape down to
+// just enough to read as an actual river, not a box. No longer named after the old state-line patch,
+// since this is real hydrology-derived data now, not a hand-picked shared-vertex guess.
+const HUDSON_BAKED_SHAPE = [[-73.982,41.32],[-73.965,41.295],[-73.974,41.222],[-73.967,41.208],[-73.959,41.2],[-73.907,41.142],[-73.918,41.086],[-73.915,41.042],[-73.905,41.031],[-73.917,40.954],[-73.94,40.891],[-73.973,40.824],[-73.999,40.788],[-74.023,40.744],[-74.043,40.711],[-74.009,40.753],[-73.933,40.867],[-73.966,40.751],[-73.976,40.701],[-73.946,40.736],[-73.929,40.728],[-73.936,40.777],[-73.924,40.879],[-73.886,40.993],[-73.869,41.091],[-73.872,41.158],[-73.874,41.195],[-73.898,41.207],[-73.954,41.248],[-73.937,41.279],[-73.982,41.32]];
+function buildHudsonBakedFallback(){
+  const clipped = clipGeometryToBox({ type: 'Polygon', coordinates: [HUDSON_BAKED_SHAPE] }, CONTEXT_CLIP_BOX);
+  if(!clipped) return []; // baked shape entirely outside the box — shouldn't happen, but stay safe
+  return meshFromClippedPolygon(clipped, 0x122A3B);
 }
 async function buildHudsonWaterOverlay(){
   try{
@@ -1877,8 +1892,8 @@ async function buildHudsonWaterOverlay(){
     suppressOutlineOverWater(outerXZ);
     buildWaterOutline(outerXZ);
   } catch(err){
-    console.warn('STAND: NHD Hudson fetch failed, falling back to the rectangular patch —', err.message);
-    const outerXZ = buildHudsonRectangleFallback();
+    console.warn('STAND: NHD Hudson fetch failed, falling back to the baked-in shape —', err.message);
+    const outerXZ = buildHudsonBakedFallback();
     suppressOutlineOverWater(outerXZ);
     buildWaterOutline(outerXZ);
   }
@@ -1922,28 +1937,14 @@ function decimateSoundPolygon(clippedRings){
   }
   return decimated;
 }
-// Fallback if the NHD fetch fails: a simple wide band spanning the full visible Sound, sized
-// conservatively (same "guaranteed margin over exact accuracy" reasoning as the Hudson's rectangle
-// fallback) — the real Sound is wide enough here that a plain rectangle safely separates Westchester
-// from Long Island without needing the Hudson's zigzag shared-vertex shape.
-const SOUND_FALLBACK_BAND = [
-  [-73.85, 40.82, 41.02], [-73.60, 40.85, 41.00], [-73.40, 40.88, 40.98], [-73.25, 40.90, 40.96],
-]; // [lon, southLat(Long Island side), northLat(Westchester side)]
-function buildSoundRectangleFallback(){
-  const south = SOUND_FALLBACK_BAND.map(([lon,sLat]) => [lon, sLat]);
-  const north = SOUND_FALLBACK_BAND.map(([lon,,nLat]) => [lon, nLat]);
-  const toXZ = ([lon,lat]) => { const p = project(lat, lon); return new THREE.Vector2(p.x, p.z); };
-  const southXZ = south.map(toXZ), northXZ = north.map(toXZ);
-  const outerXZ = [...southXZ, ...northXZ.slice().reverse()];
-  const shape = new THREE.Shape(outerXZ);
-  const geo = new THREE.ShapeGeometry(shape);
-  geo.rotateX(Math.PI / 2);
-  geo.translate(0, 0.08, 0);
-  const mat = new THREE.MeshBasicMaterial({ color: 0x122A3B, transparent: true, opacity: 1.0, side: THREE.DoubleSide, depthWrite: false, fog: false });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.renderOrder = 2.5;
-  scene.add(mesh);
-  return outerXZ;
+// v1.16.18: same treatment as the Hudson fallback above — replaced the guessed band shape with a
+// real one, live-captured from a successful fetch in the same session. 46 points, decimated from the
+// full ~1500-point live shape.
+const SOUND_BAKED_SHAPE = [[-73.25,41.126],[-73.342,41.115],[-73.337,41.114],[-73.341,41.123],[-73.369,41.1],[-73.411,41.109],[-73.441,41.061],[-73.466,41.061],[-73.502,41.048],[-73.554,41.024],[-73.576,41.021],[-73.611,41.018],[-73.664,40.985],[-73.693,40.95],[-73.738,40.968],[-73.743,40.918],[-73.768,40.907],[-73.795,40.88],[-73.8,40.848],[-73.816,40.902],[-73.814,40.829],[-73.755,40.767],[-73.742,40.829],[-73.704,40.837],[-73.67,40.847],[-73.645,40.858],[-73.575,40.912],[-73.536,40.907],[-73.542,40.877],[-73.48,40.873],[-73.467,40.874],[-73.497,40.924],[-73.486,40.946],[-73.435,40.918],[-73.474,40.912],[-73.435,40.897],[-73.43,40.906],[-73.372,40.896],[-73.362,40.888],[-73.36,40.926],[-73.379,40.937],[-73.406,40.921],[-73.38,40.943],[-73.34,40.924],[-73.292,40.924],[-73.25,41.126]];
+function buildSoundBakedFallback(){
+  const clipped = clipGeometryToBox({ type: 'Polygon', coordinates: [SOUND_BAKED_SHAPE] }, CONTEXT_CLIP_BOX);
+  if(!clipped) return [];
+  return meshFromClippedPolygon(clipped, 0x122A3B);
 }
 async function buildSoundWaterOverlay(){
   try{
@@ -1967,8 +1968,8 @@ async function buildSoundWaterOverlay(){
     suppressOutlineOverWater(outerXZ);
     buildWaterOutline(outerXZ);
   } catch(err){
-    console.warn('STAND: NHD Sound fetch failed, falling back to the rectangular band —', err.message);
-    const outerXZ = buildSoundRectangleFallback();
+    console.warn('STAND: NHD Sound fetch failed, falling back to the baked-in shape —', err.message);
+    const outerXZ = buildSoundBakedFallback();
     suppressOutlineOverWater(outerXZ);
     buildWaterOutline(outerXZ);
   }
