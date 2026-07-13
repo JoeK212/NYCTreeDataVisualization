@@ -5,6 +5,22 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.21 - 2026-07-13 - v1.16.20 shipped but the gap was still live — Joe confirmed with a fresh
+    screenshot (footer showed v1.16.20, so this wasn't a stale-deploy issue; GitHub source matched the
+    fix byte-for-byte). Went straight to the real Overpass endpoint from the browser instead of guessing
+    again: the 14-relation query consistently returned only the original 8 (Hudson/Bergen/Essex/Union/
+    Passaic/Westchester/Nassau/Suffolk), silently dropping all 6 new counties from v1.16.20 — every time,
+    deterministically, not the known ~40% intermittent-failure flakiness (that failure mode returns an
+    XML error body; this returned valid JSON with fewer relations than requested, no error at all).
+    Isolated with direct testing against the live endpoint: the 6 new counties fetch fine completely on
+    their own, and a 9-clause query (originals + one new) also fetches fine — but inserting the 6 new
+    relation clauses into the middle of the union (between Passaic and Westchester, where v1.16.20 put
+    them) reproducibly drops them, while the exact same 14 clauses with the new ones moved to the end of
+    the union return all 14, confirmed over multiple live runs. A real Overpass server-side quirk with
+    mid-union clause insertion, not a code logic bug and not anything about county size/timeout (full
+    14-clause query still resolves in a few seconds, nowhere near the 25s cap). Fix: reordered
+    buildOsmAdminQuery so the 6 new counties are appended after the original 8, not inserted between
+    Passaic and Westchester. No other logic changed from v1.16.20.
   v1.16.20 - 2026-07-13 - Fixed a real, reproducible gap in NJ's land coverage on the primary OSM/
     Overpass fetch path: both buildOsmAdminQuery's relation list AND the client-side NJ_OSM_COUNTIES
     filter only covered 5 counties (Hudson, Bergen, Essex, Union, Passaic) — a leftover from before the
@@ -1197,7 +1213,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.20';
+const APP_VERSION = '1.16.21';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -2178,15 +2194,15 @@ function buildOsmAdminQuery(){
   relation["boundary"="administrative"]["admin_level"="6"]["name"="Essex County"];
   relation["boundary"="administrative"]["admin_level"="6"]["name"="Union County"];
   relation["boundary"="administrative"]["admin_level"="6"]["name"="Passaic County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Westchester County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Nassau County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Suffolk County"];
   relation["boundary"="administrative"]["admin_level"="6"]["name"="Mercer County"];
   relation["boundary"="administrative"]["admin_level"="6"]["name"="Middlesex County"];
   relation["boundary"="administrative"]["admin_level"="6"]["name"="Monmouth County"];
   relation["boundary"="administrative"]["admin_level"="6"]["name"="Morris County"];
   relation["boundary"="administrative"]["admin_level"="6"]["name"="Somerset County"];
   relation["boundary"="administrative"]["admin_level"="6"]["name"="Sussex County"];
-  relation["boundary"="administrative"]["admin_level"="6"]["name"="Westchester County"];
-  relation["boundary"="administrative"]["admin_level"="6"]["name"="Nassau County"];
-  relation["boundary"="administrative"]["admin_level"="6"]["name"="Suffolk County"];
 );
 out body;
 >;
