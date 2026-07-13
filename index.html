@@ -5,6 +5,31 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.19 - 2026-07-11 - Direct report with a DevTools console screenshot: on nycstreettrees.netlify.app,
+    in incognito (ruling out cache), v1.16.18 confirmed correctly loaded — but NJ/Westchester/Long
+    Island were completely absent, no shapes, no labels, and critically, none of STAND's own "OSM
+    context fetch failed... falling back to county data" warnings had fired for any of the three,
+    despite the console showing Overpass had already returned a 504 Gateway Timeout. That combination
+    (a real failure already visible, but the fallback path never reached) pointed at something other
+    than "just wait longer" — except that's exactly what it turned out to be. loadOsmContext() is
+    memoized (one shared promise across all three landmass loaders, see v1.15.4) with 3 retries and no
+    client-side timeout at all — each attempt just waits however long fetch() takes to settle. A 504
+    specifically means an upstream gateway gave up waiting on Overpass's backend, which on the public
+    instance under load can itself take tens of seconds to arrive; 3 such attempts plus retry delays
+    could mean 1.5-3+ minutes of total wait before the shared promise ever rejects and the fallback
+    finally runs for any of the three consumers — with zero indication anything was still in progress.
+    Reads as fully broken to anyone testing it inside that window, even though it was already going to
+    recover on its own, eventually. Fixed with fetchWithTimeout (AbortController-wrapped fetch, 15s per
+    attempt) applied to every live geo fetch in the app — the Overpass retry loop, the county-file
+    fallback, and both NHD water fetches (Hudson/Sound) for the same reason, even though their fallback
+    is already solid data (v1.16.18) — a hung fetch would still delay showing it. Worst-case total wait
+    across all 3 Overpass retries is now ~3×15s + 2×1.2s ≈ 47s, not minutes. Verified live before
+    shipping: confirmed AbortController correctly aborts a genuinely-hung request at the requested
+    timeout (tested against an unroutable IP, which would otherwise hang far longer than any fetch
+    timeout at the OS/network level) rather than the browser's own much-longer connection timeout, then
+    ran the exact production retry-loop logic end-to-end against the same hung endpoint and confirmed
+    all 3 attempts fire, each aborts correctly, and the loop completes with the expected final error in
+    bounded time — the same flow that triggers the fallback in production.
   v1.16.18 - 2026-07-11 - Direct report: the Hudson/Sound water shapes weren't rendering at all, not
     even the fallback, in a local file:// page and a privacy-focused browser (DuckDuckGo). Regular
     Chrome worked fine at first, which pointed toward the browser rather than the code — until a real
@@ -1156,7 +1181,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.18';
+const APP_VERSION = '1.16.19';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1874,7 +1899,7 @@ async function buildHudsonWaterOverlay(){
     if(cached){
       decimatedRings = JSON.parse(cached);
     } else {
-      const res = await fetch(NHD_WATERBODY_URL);
+      const res = await fetchWithTimeout(NHD_WATERBODY_URL);
       if(!res.ok) throw new Error('NHD request failed: ' + res.status);
       const data = await res.json();
       // The Hudson/Tappan Zee estuary is the mid-sized natural=water(FTYPE 493) feature in this bbox —
@@ -1953,7 +1978,7 @@ async function buildSoundWaterOverlay(){
     if(cached){
       decimatedRings = JSON.parse(cached);
     } else {
-      const res = await fetch(NHD_SOUND_URL);
+      const res = await fetchWithTimeout(NHD_SOUND_URL);
       if(!res.ok) throw new Error('NHD request failed: ' + res.status);
       const data = await res.json();
       const sound = (data.features || []).find(f => f.properties.AREASQKM > 1000);
@@ -2114,6 +2139,20 @@ const OSM_OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
 const OSM_CONTEXT_CACHE_KEY = 'stand_osm_context_v2'; // v2: v1 (pre-bbox-fix) could contain the wrong Essex County
 const OSM_FETCH_RETRIES = 3;
 const OSM_RETRY_DELAY_MS = 1200;
+// v1.16.19: a 504 Gateway Timeout from Overpass can take the full length of whatever proxy/gateway sits
+// in front of it to actually arrive — observed live, tens of seconds per attempt when the public
+// instance is under load. With no client-side timeout, 3 retries could mean 1.5-3+ minutes of total
+// wait before the county-file fallback ever runs, with zero indication anything was still happening —
+// reads as fully broken to anyone testing it, even though it would eventually recover on its own.
+// FETCH_TIMEOUT_MS bounds each individual attempt so the app gives up on its own schedule instead of
+// passively waiting on someone else's slow server; worst case across all 3 Overpass retries is now
+// ~3×FETCH_TIMEOUT_MS + 2×OSM_RETRY_DELAY_MS ≈ 47s, not minutes.
+const FETCH_TIMEOUT_MS = 15000;
+function fetchWithTimeout(url, options, timeoutMs){
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs || FETCH_TIMEOUT_MS);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
 function buildOsmAdminQuery(){
   const b = CONTEXT_CLIP_BOX;
   return `[out:json][timeout:25][bbox:${b.latMin},${b.lonMin},${b.latMax},${b.lonMax}];
@@ -2221,7 +2260,7 @@ function loadOsmContext(){
     let lastErr = null;
     for(let attempt = 0; attempt < OSM_FETCH_RETRIES; attempt++){
       try{
-        const res = await fetch(OSM_OVERPASS_URL, {method:'POST', body: buildOsmAdminQuery()});
+        const res = await fetchWithTimeout(OSM_OVERPASS_URL, {method:'POST', body: buildOsmAdminQuery()});
         if(!res.ok) throw new Error('Overpass request failed: ' + res.status);
         // Overpass can return HTTP 200 with an XML error/rate-limit page instead of the requested
         // JSON — observed live, roughly 2-in-5 attempts on the public instance. res.ok alone can't
@@ -2253,7 +2292,7 @@ function loadContextCounties(){
   contextCountiesPromise = (async () => {
     const cached = localStorage.getItem(NJ_CONTEXT_CACHE_KEY);
     if(cached) return JSON.parse(cached);
-    const res = await fetch(NJ_COUNTIES_URL);
+    const res = await fetchWithTimeout(NJ_COUNTIES_URL);
     if(!res.ok) throw new Error('county boundary request failed: ' + res.status);
     const geo = await res.json();
     const features = (geo.features || []).filter(f => f.properties &&
