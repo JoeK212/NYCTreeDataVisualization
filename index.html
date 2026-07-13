@@ -5,6 +5,22 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.20 - 2026-07-13 - Fixed a real, reproducible gap in NJ's land coverage on the primary OSM/
+    Overpass fetch path: both buildOsmAdminQuery's relation list AND the client-side NJ_OSM_COUNTIES
+    filter only covered 5 counties (Hudson, Bergen, Essex, Union, Passaic) — a leftover from before the
+    frame was widened, so Sussex/Morris/etc. were never even requested from Overpass, not just filtered
+    out after the fact. Checked directly against the real county source data with a point-in-polygon
+    test: 6 more counties (Mercer, Middlesex, Monmouth, Morris, Somerset, Sussex) have real land inside
+    CONTEXT_CLIP_BOX and were silently omitted, Sussex specifically leaving a large uncovered gap in the
+    NW corner — confirmed live via raycasting the actual rendered scene (zero mesh hits across a
+    ~300x150-unit region that should have been NJ land). This only showed up when the OSM primary path
+    succeeded; the county-file fallback path already pulls all 21 NJ counties and was unaffected — which
+    is why the same deployed file appeared to render correctly sometimes and incorrectly other times,
+    with no code or hosting difference at all. Root cause traced after ruling out GitHub storage and
+    Netlify's serving of the file (both confirmed byte-identical to source). Not a deploy-pipeline
+    issue. The shared [bbox:...] constraint already on the query (v1.16.4) keeps the new counties'
+    common names from colliding with same-named counties in other states, same as the original 5.
+    Both the query and NJ_OSM_COUNTIES now list all 11 counties that actually intersect the clip box.
   v1.16.19 - 2026-07-11 - Direct report with a DevTools console screenshot: on nycstreettrees.netlify.app,
     in incognito (ruling out cache), v1.16.18 confirmed correctly loaded — but NJ/Westchester/Long
     Island were completely absent, no shapes, no labels, and critically, none of STAND's own "OSM
@@ -1181,7 +1197,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.19';
+const APP_VERSION = '1.16.20';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -2162,6 +2178,12 @@ function buildOsmAdminQuery(){
   relation["boundary"="administrative"]["admin_level"="6"]["name"="Essex County"];
   relation["boundary"="administrative"]["admin_level"="6"]["name"="Union County"];
   relation["boundary"="administrative"]["admin_level"="6"]["name"="Passaic County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Mercer County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Middlesex County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Monmouth County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Morris County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Somerset County"];
+  relation["boundary"="administrative"]["admin_level"="6"]["name"="Sussex County"];
   relation["boundary"="administrative"]["admin_level"="6"]["name"="Westchester County"];
   relation["boundary"="administrative"]["admin_level"="6"]["name"="Nassau County"];
   relation["boundary"="administrative"]["admin_level"="6"]["name"="Suffolk County"];
@@ -2305,7 +2327,16 @@ function loadContextCounties(){
   return contextCountiesPromise;
 }
 
-const NJ_OSM_COUNTIES = ['Hudson County', 'Bergen County', 'Essex County', 'Union County', 'Passaic County'];
+// v1.16.20: the original 5-county list only covered NJ's inner ring around NYC. Verified directly
+// against CONTEXT_CLIP_BOX (a point-in-polygon check of the real county source data, not assumed):
+// Mercer, Middlesex, Monmouth, Morris, Somerset, and Sussex counties all have real land inside the
+// clip box too and were silently omitted — Sussex specifically leaves a large gap in the NW corner
+// (near the clip box's western edge) whenever the OSM/Overpass primary fetch succeeds, since only the
+// county-file fallback path (all 21 NJ counties) happened to cover that area. Root cause of "the map
+// sometimes renders with a hole and sometimes doesn't" on the exact same deployed file: it was never
+// hosting-dependent, it depended on whether that page load's live Overpass fetch succeeded or fell
+// back.
+const NJ_OSM_COUNTIES = ['Hudson County', 'Bergen County', 'Essex County', 'Union County', 'Passaic County', 'Mercer County', 'Middlesex County', 'Monmouth County', 'Morris County', 'Somerset County', 'Sussex County'];
 async function loadStateContext(){
   try{
     const osmFeatures = (await loadOsmContext()).filter(f => NJ_OSM_COUNTIES.includes(f.properties.name));
