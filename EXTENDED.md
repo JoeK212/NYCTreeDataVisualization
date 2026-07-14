@@ -7,8 +7,8 @@ grows the same shape).
 
 - Repo: https://github.com/JoeK212/NYCTreeDataVisualization (public)
 - Live: https://nycstreettrees.netlify.app/
-- Current version: **v1.16.4**
-- Files: `index.html` (the whole app), `audit_deploy.js` (238-check QA gate, committed here for
+- Current version: **v1.16.24**
+- Files: `index.html` (the whole app), `audit_deploy.js` (309-check QA gate, committed here for
   continuity), `netlify.toml` (publish config + headers), `README.md` (short overview), this file
   (full technical detail)
 
@@ -83,9 +83,9 @@ Long-running thread across several sessions. Summary in order:
      county-file path on any failure — this safety net is not optional polish; the observed ~40%
      Overpass flakiness makes it load-bearing.
 
-   **Not yet done:** this was all verified by injecting code into the live *v1.16.3* deployment.
-   v1.16.4 itself has not yet been pushed to GitHub or redeployed — confirming it behaves the same
-   way once actually live is the next real step, not an assumption to skip.
+   This was verified by injecting code into the live *v1.16.3* deployment before v1.16.4 itself was
+   pushed — since confirmed live and deployed many versions ago; see the v1.16.19–v1.16.24 summary
+   below for the most recent work in this same area.
 
 ## Other recent feature work
 
@@ -124,11 +124,50 @@ Long-running thread across several sessions. Summary in order:
 - Claude in Chrome is connected. Use it for anything visual or live-data-dependent — don't guess
   blind at network behavior or rendered output when a real browser is available to check.
 
+## v1.16.19 – v1.16.24 — NJ/Westchester coverage saga, water color, and a real perf fix
+
+Another long-running thread, summarized here — full root-cause detail is in `index.html`'s changelog:
+
+1. **v1.16.19** — `loadOsmContext()` had retries but no client-side timeout; a hung Overpass request
+   could leave the app looking fully broken for 1.5–3+ minutes before the fallback ever ran. Fixed
+   with `fetchWithTimeout` (AbortController, 15s/attempt) on every live geo fetch.
+2. **v1.16.20** — a real NJ land-coverage gap in the NW corner, initially (wrongly) suspected as a
+   GitHub→Netlify deploy-pipeline issue. Ruled that out by diffing GitHub source, Netlify-served
+   bytes, and the local file byte-for-byte (identical). Actual cause: `NJ_OSM_COUNTIES` and the
+   Overpass query itself both only listed 5 counties, a leftover from before the frame was widened —
+   6 counties that genuinely intersect `CONTEXT_CLIP_BOX` (Mercer, Middlesex, Monmouth, Morris,
+   Somerset, Sussex) were never requested. Added all 6.
+3. **v1.16.21** — the v1.16.20 fix didn't actually reach the site. Querying the real Overpass endpoint
+   directly showed it deterministically returned only the original 8 relations, dropping all 6 new
+   ones — not the known ~40% intermittent-failure flakiness (this returned valid JSON, just
+   incomplete). Isolated live: Overpass silently drops relation clauses inserted mid-union; the same
+   clauses appended at the end of the union return correctly. Reordered accordingly.
+4. **v1.16.22** — the v1.16.21 fix was verified correct against the live Overpass endpoint, but the
+   same gap was still visible. Cause: `loadOsmContext()` reads `localStorage` before ever fetching,
+   with no expiry logic — a stale `stand_osm_context_v2` cache entry (8 counties, from before the
+   fix) meant the corrected query never ran. Bumped the cache key to `v3`. **Any future change to
+   what `buildOsmAdminQuery`/`NJ_OSM_COUNTIES` return must bump this cache key in the same edit**, or
+   it will silently fail to reach returning visitors even though the deployed code is correct.
+5. **v1.16.23** — two marked-up screenshots showed visibly different water blues plus a double
+   outline. The base ocean plane renders a radial gradient texture; the Hudson/Sound water overlays
+   were filled with a flat guessed color (`0x122A3B`) instead. Verified live via `gl.readPixels`
+   (harbor water: `rgb(27,62,81)` vs. the flat overlay: `rgb(18,42,59)` right next to it — a real,
+   confirmed seam). Fixed by sharing the base plane's exact texture with correctly computed
+   world-space UVs (`WATER_PLANE_SIZE`, `getWaterTexture()`).
+6. **v1.16.24** — performance. Switching Canopy Color mode called full `rebuildForest`, re-running
+   `growTree`'s entire recursive branch walk for every tree just to change a color — timed live at
+   4.1–5.4s of complete main-thread freeze at the default 7,000-tree sample. `growTree` is
+   deterministically seeded per tree, so branch geometry never actually changes with color mode; only
+   canopy-point colors do. Added `updateForestColors()`, which rewrites just the color attributes in
+   place, with a per-`tree_id` cache since a tree's several leaf points all share one color. Cut the
+   live-measured time to 120ms (~35–45x faster), confirmed byte-identical output against a full
+   rebuild before wiring the color/season buttons to it.
+
 ## Known open items
 
 - 1995 census not wired up (schema/canonical-resource-ID unconfirmed).
-- v1.16.4 needs to actually be pushed + redeployed + reconfirmed live (see Immediate next step in
-  the short summary doc).
-- Real hydrography (actual water-body polygons, not administrative boundaries used as a coastline
-  proxy) remains a theoretical further improvement if the OSM admin-boundary approach still isn't
-  precise enough after v1.16.4 ships — not attempted this round.
+- Real hydrography for the water shapes is done (v1.16.11/v1.16.18 — see above); the coastline/admin
+  boundaries elsewhere in the frame are still cartographically-generalized county/state lines, not
+  hydrology-precise, and that's an accepted tradeoff for a stylized backdrop layer, not a bug.
+- Minor map-graphics cleanup items flagged by Joe as lower priority, not yet itemized here — pick up
+  from the live conversation history / project memory if resuming this thread.

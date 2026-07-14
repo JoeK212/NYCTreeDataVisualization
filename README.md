@@ -12,7 +12,7 @@ Built by Joe.K · [axisbim.io](https://axisbim.io)
 ## Files
 
 - `index.html` — the whole app. Three.js (r128, via cdnjs), no build step, no dependencies to install.
-- `audit_deploy.js` — local pre-ship QA gate, 284 checks as of v1.16.18. Run `node audit_deploy.js`
+- `audit_deploy.js` — local pre-ship QA gate, 309 checks as of v1.16.24. Run `node audit_deploy.js`
   before every deploy; it exits 1 on any failure. Committed here (not the usual convention across
   Joe's other tools, which keep this local-only) so a future session — mine or anyone's — has the
   full regression history and can verify a change without rebuilding the checks from scratch.
@@ -59,7 +59,23 @@ Before every push: `node audit_deploy.js` locally, confirm it's clean.
 
 ## Version
 
-Current: **v1.16.18**. Full changelog lives at the top of `index.html` — every version bump,
+Current: **v1.16.24**. Full changelog lives at the top of `index.html` — every version bump,
 including UI-only changes, is logged there with root cause and what was verified. For the water/
 coastline work specifically, the changelog entries from v1.16.5 onward are the most useful single
 source if you're trying to understand what's real data vs. approximation and why.
+
+Recent (v1.16.19–v1.16.24), briefly — see `index.html`'s changelog for full detail on each:
+
+- **v1.16.19–v1.16.22**: a multi-round NJ/Westchester/Long Island coverage saga. A client-side
+  timeout fix (v1.16.19), a missing-counties fix to the Overpass query (v1.16.20), a fix to *where*
+  those counties were inserted in the query — Overpass silently drops relation clauses inserted
+  mid-union, a real server-side quirk (v1.16.21) — and finally a stale `localStorage` cache that was
+  masking the already-correct v1.16.21 fix for any returning visitor (v1.16.22). If you're touching
+  `buildOsmAdminQuery`/`NJ_OSM_COUNTIES` again: append new clauses at the end of the query, and bump
+  `OSM_CONTEXT_CACHE_KEY` in the same edit.
+- **v1.16.23**: the Hudson/Sound water overlays were filled with a flat guessed color instead of the
+  base ocean plane's real gradient texture, producing two visibly different blues. Fixed by sharing
+  the same texture with correctly computed world-space UVs.
+- **v1.16.24**: performance — switching Canopy Color mode froze the tab for 4–5s (full branch-geometry
+  regeneration for a color-only change). Added a fast path that updates just the color attributes in
+  place; confirmed live at ~35–45x faster with byte-identical output.
