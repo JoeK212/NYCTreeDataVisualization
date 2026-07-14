@@ -5,6 +5,24 @@
   Joe.K · axisbim.io
 
   CHANGELOG
+  v1.16.24 - 2026-07-13 - Performance: switching Canopy Color (Health/Species/Season) or the season
+    picker froze the whole tab for 4.1-5.4s at the default 7,000-tree sample, timed live against the
+    real deployed site (click() didn't return until the handler finished — nothing else on the page
+    could respond during that span). Root cause: both handlers called full rebuildForest, which reruns
+    growTree's entire recursive branch walk and tapered-tube mesh emission for every tree, even though
+    growTree is deterministically seeded per tree_id and branch geometry never actually changes with
+    colorMode — only canopy/leaf point colors do; branch segments always render in the fixed BARK_COLOR
+    regardless of color mode and were never affected by this setting. Added updateForestColors(), which
+    rewrites just the two canopy-point geometries' color attributes in place (BufferAttribute.
+    needsUpdate, zero new geometry, zero branch re-walk) using a computeCanopyColor() helper factored
+    out of growTree so both paths can never visually disagree. A tree's color depends only on the tree
+    and the current mode/season, never on which of its several leaf points is being colored, so colors
+    are cached per tree_id and reused across a tree's own points rather than recomputed per point — cut
+    the live-measured time from 602ms (naive per-point version) to 120ms for the full sample, a ~35-45x
+    improvement over the original 4.1-5.4s. Verified byte-identical color output against a full
+    rebuildForest for health, species, and season modes before wiring the buttons to the new path.
+    Category-visibility toggles (the health/species legend swatches, which change which trees are drawn,
+    not just their color) correctly still use the full rebuildForest — untouched by this change.
   v1.16.23 - 2026-07-13 - Two marked-up screenshots flagged real, confirmed problems: two visibly
     different blues for water ("water blue 1" vs "water blue 2"), and a double-outline artifact where
     they met. Root cause, verified live via gl.readPixels against the real deployed site rather than
@@ -1237,7 +1255,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.23';
+const APP_VERSION = '1.16.24';
 
 /* ================= Toast ================= */
 let toastTimer = null;
@@ -1351,6 +1369,20 @@ const BOROUGH_BOUNDS_APPROX = {
    Each tree is grown from a seed derived from tree_id, so the same record always
    produces the same structure. Diameter (tree_dbh) drives overall scale + depth,
    species drives branch-angle character, health drives branch line color. */
+// v1.16.24: extracted out of growTree so the color-only update path (updateForestColors, see below)
+// can compute the exact same color a full rebuild would, without re-running any branch geometry.
+// Takes the tree's own seed (not the record) since growTree already has it computed once per tree —
+// callers outside growTree (which don't have a running rng() stream to protect) just hash tree_id
+// themselves, see updateForestColors.
+function computeCanopyColor(rec, seed, colorMode, topSpeciesSet, season){
+  if(colorMode === 'species'){
+    const isTop = topSpeciesSet && topSpeciesSet.has(rec.species);
+    return isTop ? speciesColor(rec.species) : OTHER_SPECIES_COLOR;
+  }
+  if(colorMode === 'season') return seasonColor(seed, season);
+  return HEALTH_COLOR[rec.health] || HEALTH_COLOR.Unknown;
+}
+
 function growTree(rec, out){
   const seed = hashString(String(rec.tree_id || (rec.lat+','+rec.lon)));
   const rng = mulberry32(seed);
@@ -1359,16 +1391,7 @@ function growTree(rec, out){
   const depth = dbh > 22 ? 5 : dbh > 10 ? 4 : 3;
   const spHash = hashString(rec.species || 'unknown');
   const angleSpread = 0.35 + ((spHash % 100) / 100) * 0.55; // species-driven branch character, radians
-  const healthColor = HEALTH_COLOR[rec.health] || HEALTH_COLOR.Unknown;
-  let canopyColor;
-  if(out.colorMode === 'species'){
-    const isTop = out.topSpeciesSet && out.topSpeciesSet.has(rec.species);
-    canopyColor = isTop ? speciesColor(rec.species) : OTHER_SPECIES_COLOR;
-  } else if(out.colorMode === 'season'){
-    canopyColor = seasonColor(seed, out.season);
-  } else {
-    canopyColor = healthColor;
-  }
+  const canopyColor = computeCanopyColor(rec, seed, out.colorMode, out.topSpeciesSet, out.season);
 
   const base = new THREE.Vector3(rec.x, 0, rec.z);
   const lean = new THREE.Vector3((rng()-0.5)*0.12, 1, (rng()-0.5)*0.12).normalize();
@@ -3482,6 +3505,57 @@ function rebuildForest(records){
   renderLegend();
 }
 
+// v1.16.24: direct performance complaint, confirmed live before writing a line of this — clicking a
+// Canopy Color button (Health/Species/Season) called full rebuildForest, which reruns growTree (the
+// entire recursive branch walk + tapered-tube mesh emission) for every visible tree just to change a
+// color. Timed on the real deployed site: 5.4s of complete main-thread freeze from one click on
+// "Species" at the default 7,000-tree sample — click() doesn't even return until the handler
+// finishes, so the whole tab is dead for that entire span. The wasted work was real, not just
+// theoretical: growTree is deterministically seeded per tree (hashString(tree_id) → mulberry32), so
+// switching color modes recomputes branch positions/radii/topology that come out byte-identical to
+// what was already on screen — only canopyColor (leaf/canopy points) actually changes; branch segments
+// always use the fixed BARK_COLOR regardless of colorMode and were never affected by this setting in
+// the first place. This function updates just the two canopy point geometries' color attributes in
+// place (BufferAttribute.needsUpdate, no new geometry, no re-walk of any branch) using the exact same
+// computeCanopyColor used by growTree, so the two paths can never visually disagree. A tree's color
+// depends only on the tree (tree_id) and the current colorMode/season, never on which specific leaf
+// point is being colored — every tree has several leaf points (one per branch tip), so a first version
+// that recomputed color per point (rather than per tree) was doing 3-10x more hashString + color work
+// than necessary. Caching by tree_id and reusing across a tree's own points cut the measured live time
+// from 602ms to 120ms for the full 7,000-tree/70,106-point sample (down from 4.1-5.4s for the old full
+// rebuildForest path) — confirmed byte-identical output against a full rebuild's color buffer before
+// shipping, for health, species, and season modes. Falls back to a full rebuildForest if the forest
+// hasn't been built yet (first load, or mid-flight after a borough/year/sample change) rather than
+// assuming forestPoints/forestPointsFar already exist.
+function updateForestColors(records){
+  if(!forestPoints || !forestPointsFar){ rebuildForest(records); return; }
+  const topSet = colorMode === 'species' ? topSpeciesSet(records) : null;
+  const cache = new Map(); // tree_id (or lat,lon fallback) -> THREE.Color, since color is per-tree not per-point
+  function colorFor(rec){
+    const key = rec.tree_id || (rec.lat+','+rec.lon);
+    let c = cache.get(key);
+    if(!c){
+      const seed = hashString(String(key));
+      c = computeCanopyColor(rec, seed, colorMode, topSet, selectedSeason);
+      cache.set(key, c);
+    }
+    return c;
+  }
+  const colorAttr = forestPoints.geometry.attributes.color;
+  for(let i=0;i<pointRecordRefs.length;i++){
+    const c = colorFor(pointRecordRefs[i]);
+    colorAttr.setXYZ(i, c.r, c.g, c.b);
+  }
+  colorAttr.needsUpdate = true;
+  const colorAttrFar = forestPointsFar.geometry.attributes.color;
+  for(let i=0;i<pointRecordRefsFar.length;i++){
+    const c = colorFor(pointRecordRefsFar[i]);
+    colorAttrFar.setXYZ(i, c.r, c.g, c.b);
+  }
+  colorAttrFar.needsUpdate = true;
+  renderLegend();
+}
+
 // v1.16.1: standalone twin of rebuildForest's geometry-building step, for the growth-transition
 // feature. Deliberately NOT a refactor of rebuildForest itself — several audit checks pattern-match
 // rebuildForest's exact structure (the hideTreeInfo() opener, the forestLines/forestPoints/
@@ -3595,7 +3669,7 @@ function renderColorModeRow(){
     btn.addEventListener('click', ()=>{
       colorMode = btn.dataset.mode;
       renderColorModeRow();
-      if(currentRecords.length) rebuildForest(currentRecords);
+      if(currentRecords.length) updateForestColors(currentRecords);
     });
   });
 }
@@ -3696,7 +3770,7 @@ function renderLegend(){
   legend.querySelectorAll('button.season-item').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       selectedSeason = btn.dataset.season;
-      if(currentRecords.length) rebuildForest(currentRecords);
+      if(currentRecords.length) updateForestColors(currentRecords);
     });
   });
   const resetBtn = legend.querySelector('.reset-link');
