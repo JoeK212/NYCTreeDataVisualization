@@ -201,10 +201,11 @@
   .scale-bar .tick::before{left:0;} .scale-bar .tick::after{right:0;}
   .loading-overlay{
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-    background:var(--canvas-bg); color:rgba(241,235,221,.9); font-family:var(--font-ui); font-size:13px;
-    letter-spacing:.05em; flex-direction:column; gap:10px;
+    background:color-mix(in srgb, var(--canvas-bg) 88%, transparent); color:rgba(241,235,221,.9);
+    font-family:var(--font-ui); font-size:13px; letter-spacing:.05em; flex-direction:column; gap:10px;
+    opacity:1; transition:opacity .25s ease; pointer-events:auto;
   }
-  .loading-overlay.hide{display:none;}
+  .loading-overlay.hide{opacity:0; pointer-events:none;}
   .spinner{width:22px; height:22px; border:2px solid rgba(241,235,221,.25); border-top-color:var(--accent); border-radius:50%; animation:spin 0.9s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
 
@@ -415,7 +416,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.27';
+const APP_VERSION = '1.16.28';
 
 /* ================= Toast ================= */
 let toastTimer = null;

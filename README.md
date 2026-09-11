@@ -12,7 +12,8 @@ Built by Joe.K · [axisbim.io](https://axisbim.io)
 ## Files
 
 - `index.html` — the whole app. Three.js (r128, via cdnjs), no build step, no dependencies to install.
-- `audit_deploy.js` — local pre-ship QA gate, 309 checks as of v1.16.24. Run `node audit_deploy.js`
+- `audit_deploy.js` — local pre-ship QA gate, 231 checks as of v1.16.28 (213 currently pass; 18 known
+  pre-existing failures — see Known Issues below). Run `node audit_deploy.js`
   before every deploy; it exits 1 on any failure. Committed here (not the usual convention across
   Joe's other tools, which keep this local-only) so a future session — mine or anyone's — has the
   full regression history and can verify a change without rebuilding the checks from scratch.
@@ -59,7 +60,7 @@ Before every push: `node audit_deploy.js` locally, confirm it's clean.
 
 ## Version
 
-Current: **v1.16.24**. Full changelog lives at the top of `index.html` — every version bump,
+Current: **v1.16.28**. Full changelog lives at the top of `index.html` — every version bump,
 including UI-only changes, is logged there with root cause and what was verified. For the water/
 coastline work specifically, the changelog entries from v1.16.5 onward are the most useful single
 source if you're trying to understand what's real data vs. approximation and why.
@@ -79,3 +80,31 @@ Recent (v1.16.19–v1.16.24), briefly — see `index.html`'s changelog for full 
 - **v1.16.24**: performance — switching Canopy Color mode froze the tab for 4–5s (full branch-geometry
   regeneration for a color-only change). Added a fast path that updates just the color attributes in
   place; confirmed live at ~35–45x faster with byte-identical output.
+- **v1.16.25**: a full-screen phone-blocking gate, matching Modulor Mondrian's own treatment — this
+  app's drag-to-orbit/pinch-to-zoom interaction doesn't work at phone width. Gated on viewport width
+  (700px), checked first in `boot()` so nothing (scene init, network fetches) runs on a blocked screen.
+- **v1.16.26**: the loading overlay's text was unreadable in dark theme — it used `--paper`, a
+  background/surface variable that flips meaning per theme, instead of a fixed light color like every
+  other canvas-overlaid text element (compass, scale bar) already uses.
+- **v1.16.27**: the health/species legend (which doubles as a visibility filter) sat below the
+  viewport with no label. Moved into the top control panel as a labeled "Filters" group, matching
+  Borough/Trunk Size's own pattern — also means it's now correctly locked during a growth-transition
+  animation, same as every other control.
+- **v1.16.28**: the loading overlay itself was fully opaque, so every borough/year/reseed fetch
+  blacked out the entire already-rendered map rather than just showing a loading state. Now
+  semi-transparent (`color-mix`) with a smooth opacity fade instead of an instant cut.
+
+## Known Issues
+
+- `audit_deploy.js`'s 18 currently-failing checks are a pre-existing mismatch between this repo's
+  `index.html` and `audit_deploy.js` — not something introduced by any of the work above. Several
+  checks expect OSM/Overpass support to be fully removed (e.g. "OSM path fully removed: no
+  OSM-related identifiers survive in live code" fails because `index.html` still has
+  `loadOsmContext`/`OSM_OVERPASS_URL`), and a couple expect a `CHANGELOG.md` file for the version-sync
+  check that isn't present in this repo. Looks like an in-progress migration from elsewhere that
+  didn't fully land here — worth reconciling, but is a real product decision (was dropping Overpass
+  entirely intentional?), not something to silently paper over.
+- Borough switching and reseeding have no crossfade — an instant hard-cut rebuild once data arrives,
+  unlike the smooth 6.5s crossfade `growToYear` does for census-year switching. Extending that same
+  mechanism to boroughs/reseed would make transitions consistent app-wide, but it's a real
+  architecture change, not a small fix.

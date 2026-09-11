@@ -7,10 +7,10 @@ grows the same shape).
 
 - Repo: https://github.com/JoeK212/NYCTreeDataVisualization (public)
 - Live: https://nycstreettrees.netlify.app/
-- Current version: **v1.16.24**
-- Files: `index.html` (the whole app), `audit_deploy.js` (309-check QA gate, committed here for
-  continuity), `netlify.toml` (publish config + headers), `README.md` (short overview), this file
-  (full technical detail)
+- Current version: **v1.16.28**
+- Files: `index.html` (the whole app), `audit_deploy.js` (231-check QA gate — 213 currently pass, 18
+  known pre-existing failures, see Known Open Items — committed here for continuity), `netlify.toml`
+  (publish config + headers), `README.md` (short overview), this file (full technical detail)
 
 The in-file changelog at the top of `index.html` is the real source of truth for every change,
 including root cause and what was verified — this document summarizes it, it doesn't replace it.
@@ -163,8 +163,52 @@ Another long-running thread, summarized here — full root-cause detail is in `i
    live-measured time to 120ms (~35–45x faster), confirmed byte-identical output against a full
    rebuild before wiring the color/season buttons to it.
 
+## v1.16.25 – v1.16.28 — phone gate, loading-state readability, filter placement
+
+1. **v1.16.25** — full-screen phone-blocking gate, matching Modulor Mondrian's own "requires a
+   tablet or desktop display" treatment (this app's drag-to-orbit/pinch-to-zoom genuinely doesn't
+   work at phone width). Gated on viewport width (700px, phone-vs-tablet), not user-agent sniffing.
+   Checked first in `boot()` — on a blocked screen, `initScene()` and every network fetch are skipped
+   entirely rather than run and then hidden. The mark uses STAND's own Good/Fair/Poor health-legend
+   colors instead of copying Mondrian's palette.
+2. **v1.16.26** — the loading overlay's text was unreadable in dark theme specifically. It used
+   `color:var(--paper)`, a background/surface variable that flips meaning per theme (light in light
+   mode, dark in dark mode) — readable in light mode by coincidence, near-invisible against the dark
+   overlay background in dark mode. Every other piece of text drawn over the 3D canvas (compass,
+   scale bar) already uses a fixed light `rgba()` instead of a theme variable, since the canvas itself
+   is always dark regardless of UI theme — matched that existing pattern. Verified live: forced dark
+   theme + the loading overlay on the real deployed site, screenshotted before (text essentially
+   invisible) and after (clearly readable).
+3. **v1.16.27** — the health/species legend (which doubles as a click-to-filter control) sat below
+   the viewport with no label, unclear it was interactive. Moved into the top control panel as a
+   labeled "Filters" group, matching Borough/Trunk Size's existing label+row pattern. Side effect
+   verified live: legend clicks call the same `rebuildForest` the `.panel.growing` lock exists to
+   block during a "Watch it grow" transition — moving the legend inside `.panel` means it's now
+   correctly covered by that lock too, closing a gap that existed before.
+4. **v1.16.28** — direct report, investigated live end-to-end: switching boroughs made "the 3D frame
+   go dark." Root cause distinct from v1.16.26 (which was already fixed and deployed by this point):
+   `.loading-overlay`'s background was fully opaque, so every borough/year/reseed fetch replaced the
+   *entire already-rendered map* with solid black, while unrelated floating labels (borough names,
+   compass) stayed visible on top — read as the app breaking, not loading. Verified by holding the
+   loading state open deliberately (`setLoading(true, ...)` without calling `false`) and screenshotting
+   the real deployed site. Fixed with `color-mix(in srgb, var(--canvas-bg) 88%, transparent)` so the
+   existing scene stays dimly visible underneath, plus switched the show/hide from an instant
+   `display:none` cut to a `.25s` opacity fade.
+
 ## Known open items
 
+- **`audit_deploy.js`/`index.html` mismatch (18 failing checks, pre-existing, not from any of the
+  work above)**: several checks expect OSM/Overpass support to be fully removed from `index.html`
+  (e.g. "OSM path fully removed: no OSM-related identifiers survive in live code" fails because
+  `loadOsmContext`/`OSM_OVERPASS_URL` are still present), and a couple expect a `CHANGELOG.md` file
+  for the version-sync check that isn't present in this repo. Reads like an in-progress migration
+  from another session/branch that didn't fully land here. Whether to actually remove Overpass
+  support, or update the audit to match what's really shipped, is a real product decision — flagged
+  here rather than guessed at.
+- **No crossfade for borough switching or reseeding** — `loadAndRender` does an instant hard-cut
+  rebuild once data arrives, unlike `growToYear`'s smooth 6.5s opacity+size crossfade for census-year
+  switching. Extending that same mechanism to boroughs/reseed would make transitions consistent
+  app-wide; flagged as a real architecture change, not attempted here.
 - 1995 census not wired up (schema/canonical-resource-ID unconfirmed).
 - Real hydrography for the water shapes is done (v1.16.11/v1.16.18 — see above); the coastline/admin
   boundaries elsewhere in the frame are still cartographically-generalized county/state lines, not
