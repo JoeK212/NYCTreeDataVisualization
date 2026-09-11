@@ -201,14 +201,14 @@
   .scale-bar .tick::before{left:0;} .scale-bar .tick::after{right:0;}
   .loading-overlay{
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-    background:var(--canvas-bg); color:var(--paper); font-family:var(--font-ui); font-size:13px;
+    background:var(--canvas-bg); color:rgba(241,235,221,.9); font-family:var(--font-ui); font-size:13px;
     letter-spacing:.05em; flex-direction:column; gap:10px;
   }
   .loading-overlay.hide{display:none;}
   .spinner{width:22px; height:22px; border:2px solid rgba(241,235,221,.25); border-top-color:var(--accent); border-radius:50%; animation:spin 0.9s linear infinite;}
   @keyframes spin{to{transform:rotate(360deg);}}
 
-  .legend{display:flex; gap:16px; flex-wrap:wrap; align-items:center; margin-top:12px; font-family:var(--font-ui); font-size:12px; color:var(--ink-soft);}
+  .legend{display:flex; gap:16px; flex-wrap:wrap; align-items:center; font-family:var(--font-ui); font-size:12px; color:var(--ink-soft);}
   .legend .sw{display:inline-block; width:10px; height:10px; margin-right:6px; vertical-align:-1px; border-radius:1px;}
   /* v1.14.0: legend swatches are now toggle buttons — click to hide/show that category's trees. */
   .legend .item{background:none; border:none; padding:0; margin:0; font:inherit; color:inherit; cursor:pointer; display:inline-flex; align-items:center;}
@@ -346,6 +346,10 @@
         <button class="btn secondary" id="recenterBtn" title="Reset camera position, angle, and pan to the current view preset">Recenter</button>
       </div>
     </div>
+    <div class="group" id="filtersGroup">
+      <label>Filters</label>
+      <div class="legend" id="legend"></div>
+    </div>
     <div class="group" style="margin-left:auto; align-items:flex-end;">
       <span class="stat" id="statLine"><b>—</b> trees loaded</span>
     </div>
@@ -365,8 +369,6 @@
     <div class="scale-bar" id="scaleBar"></div>
     <div class="hint">Drag to orbit · right-click or two-finger drag to pan · scroll or pinch to zoom in for real branch structure · tap a tree for its record</div>
   </div>
-
-  <div class="legend" id="legend"></div>
 
 </main>
 
@@ -413,7 +415,7 @@
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const APP_VERSION = '1.16.25';
+const APP_VERSION = '1.16.27';
 
 /* ================= Toast ================= */
 let toastTimer = null;
